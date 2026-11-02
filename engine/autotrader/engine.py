@@ -61,7 +61,7 @@ class CycleReport:
     checked: int = 0  # stocks looked at for buys
 
     def summary(self) -> str:
-        """One line for the app, e.g. "Checked 52 stocks: bought 1, sold nothing"."""
+        """One line for the app, e.g. "Checked 52 stocks: bought MSFT"."""
         did = []
         if self.buys:
             did.append(f"bought {', '.join(b.split(' x')[0] for b in self.buys)}")
@@ -69,9 +69,16 @@ class CycleReport:
             did.append(f"sold {', '.join(x.split(':')[0] for x in self.sells)}")
         if self.queued:
             did.append(f"asked you about {', '.join(q.split(' x')[0] for q in self.queued)}")
+        if "bot stopped mid-cycle" in self.skipped:
+            did.append("stopped partway through")
+        if self.halted:
+            did.append(f"no new buys ({self.halted})")
+            head = "Checked the stocks it owns"
+        else:
+            head = f"Checked {self.checked} stocks"
         if not did:
             did.append("no trades needed")
-        return f"Checked {self.checked} stocks: " + "; ".join(did)
+        return f"{head}: " + "; ".join(did)
 
 
 class Engine:

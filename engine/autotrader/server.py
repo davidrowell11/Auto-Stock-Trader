@@ -118,6 +118,7 @@ class BotRunner:
         self.now_since = _now_iso()
         self.next_check: str | None = None
         self.steps: deque[dict] = deque(maxlen=60)
+        self._status_lock = threading.Lock()  # the bot thread writes, app requests read
         self.last_report: dict | None = None
         self.busy = False  # True while a check is running
         self._wake = threading.Event()  # set by Start so the bot begins at once
@@ -132,15 +133,22 @@ class BotRunner:
 
     def step(self, text: str, log_it: bool = True) -> None:
         """Record what the bot is doing right now (and, if log_it, add it to the recent steps)."""
-        self.now_doing, self.now_since = text, _now_iso()
-        if log_it:
-            self.steps.append({"ts": self.now_since, "text": text})
+        with self._status_lock:
+            self.now_doing, self.now_since = text, _now_iso()
+            if log_it:
+                self.steps.append({"ts": self.now_since, "text": text})
 
     def live_status(self) -> dict:
+        with self._status_lock:
+            now, since, steps = self.now_doing, self.now_since, list(reversed(self.steps))
+        running = self.running
+        if not running and not self.busy:
+            # Derived, not stored, so a finishing check can't make a stopped bot look active.
+            now = "Stopped. Press Start bot to begin."
         return {
-            "now": self.now_doing, "since": self.now_since, "next_check": self.next_check,
-            "working": self.busy,
-            "steps": list(reversed(self.steps)), "last_cycle": self.last_report,
+            "now": now, "since": since, "working": self.busy, "steps": steps,
+            "next_check": self.next_check if running else None,
+            "last_cycle": self.last_report,
         }
 
     @property
@@ -194,9 +202,10 @@ class BotRunner:
                 self.check_live_safety(self.broker.get_account().equity)
             finally:
                 self.busy = False
-        self.step(report.summary())
+        summary = report.summary()
+        self.step(summary)
         self.last_report = {
-            "ts": _now_iso(), "summary": report.summary(), "checked": report.checked,
+            "ts": _now_iso(), "summary": summary, "checked": report.checked,
             "buys": report.buys, "sells": report.sells, "queued": report.queued,
             "skipped": report.skipped[:40], "skipped_total": len(report.skipped),
             "halted": report.halted, "mood": report.mood,
@@ -224,10 +233,11 @@ class BotRunner:
                     self.run_once()
                     self.error = None
                     self.failures = 0
-                    self.next_check = (datetime.now(timezone.utc)
-                                       + timedelta(seconds=wait)).isoformat(timespec="seconds")
-                    self.step(f"Resting until the next check. {self.last_report['summary']}.",
-                              log_it=False)
+                    if self.running:  # not if Stop was pressed during the check
+                        self.next_check = (datetime.now(timezone.utc)
+                                           + timedelta(seconds=wait)).isoformat(timespec="seconds")
+                        self.step(f"Resting until the next check. {self.last_report['summary']}.",
+                                  log_it=False)
             except Exception as exc:  # keep the thread alive; show the problem in the app
                 log.exception("%s cycle failed", self.mode.value)
                 self.error = str(exc)
@@ -589,7 +599,8 @@ def create_app(runners: dict[Mode, BotRunner], journal: Journal, token: str,
         r.store.update(r.mode, {"running": True, "buying_paused": None, "safety_peak": None})
         journal.add_event(r.mode.value, "start", "Bot started")
         r.step("Starting up", log_it=False)
-        r._wake.set()  # don't wait for the current pause to finish
+        if not r.busy:
+            r._wake.set()  # start now instead of after the current pause
         return {"running": True}
 
     @app.post("/api/{mode}/stop", **secured)

@@ -50,7 +50,8 @@ class _DashboardState extends State<Dashboard> {
 
   /// Just the live status: cheap for the server, so it updates every few seconds.
   Future<void> refreshLive() async {
-    if (!mounted || summary == null) return;
+    // Only while the bot runs; when stopped, the 30-second refresh is enough.
+    if (!mounted || summary?.running != true) return;
     try {
       final l = await api.live(widget.mode);
       if (mounted) setState(() => liveStatus = l);
@@ -77,6 +78,12 @@ class _DashboardState extends State<Dashboard> {
         api.events(m),
         api.approvals(m),
         api.weekly(m),
+        api
+            .live(m)
+            .then<LiveStatus?>((l) => l)
+            .catchError(
+              (_) => null, // older servers don't have it
+            ),
       ]);
       final c = results[2] as List<EquityPoint>;
       List<EquityPoint> b = [];
@@ -99,13 +106,9 @@ class _DashboardState extends State<Dashboard> {
           ready = await api.readiness();
         } catch (_) {} // older servers don't have it
       }
-      LiveStatus? l;
-      try {
-        l = await api.live(m);
-      } catch (_) {} // older servers don't have it
       if (!mounted) return;
       setState(() {
-        liveStatus = l ?? liveStatus;
+        liveStatus = results[6] as LiveStatus? ?? liveStatus;
         readiness = ready;
         summary = results[0] as Summary;
         holdings = results[1] as List<Holding>;
@@ -430,7 +433,11 @@ class _DashboardState extends State<Dashboard> {
 
   /// Type an exact Test budget instead of using the slider.
   Future<void> _typeBudget(Summary s) async {
-    final equity = s.equity ?? 100000;
+    final equity = s.equity;
+    if (equity == null) return; // not connected to the broker yet
+    final maxBudget = equity < 1000
+        ? 1000.0
+        : equity; // same limits as the slider
     final ctrl = TextEditingController(
       text: s.budget?.toStringAsFixed(0) ?? '',
     );
@@ -454,7 +461,10 @@ class _DashboardState extends State<Dashboard> {
                 prefixText: '\$ ',
                 hintText: 'For example 10000',
               ),
-              onSubmitted: (v) => Navigator.pop(c, v),
+              // Enter on an empty box does nothing (it isn't "whole account").
+              onSubmitted: (v) {
+                if (v.trim().isNotEmpty) Navigator.pop(c, v);
+              },
             ),
           ],
         ),
@@ -468,7 +478,8 @@ class _DashboardState extends State<Dashboard> {
             child: const Text('Use whole account'),
           ),
           FilledButton(
-            onPressed: () => Navigator.pop(c, ctrl.text),
+            onPressed: () =>
+                Navigator.pop(c, ctrl.text.trim().isEmpty ? null : ctrl.text),
             child: const Text('Save'),
           ),
         ],
@@ -484,12 +495,12 @@ class _DashboardState extends State<Dashboard> {
       return;
     }
     final v = parseMoney(text);
-    if (v == null || v < 100 || v > equity) {
+    if (v == null || v < 100 || v > maxBudget) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
-              'Enter an amount from \$100 to ${moneyRound.format(equity)}. The budget was not changed.',
+              'Enter an amount from \$100 to ${moneyRound.format(maxBudget)}. The budget was not changed.',
             ),
           ),
         );
@@ -791,12 +802,9 @@ class _DashboardState extends State<Dashboard> {
               ],
             ),
             const SizedBox(height: 10),
-            Semantics(
-              liveRegion: true,
-              child: Text(
-                l.working ? '${l.now}…' : l.now,
-                style: t.bodyLarge?.copyWith(fontWeight: FontWeight.w600),
-              ),
+            Text(
+              l.working ? '${l.now}…' : l.now,
+              style: t.bodyLarge?.copyWith(fontWeight: FontWeight.w600),
             ),
             if (last != null) ...[
               const SizedBox(height: 6),

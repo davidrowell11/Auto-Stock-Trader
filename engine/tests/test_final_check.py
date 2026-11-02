@@ -283,6 +283,23 @@ class ServerTests(unittest.TestCase):
         self.c.post("/api/test/stop", headers=AUTH)
         self.assertTrue(self.c.get("/api/test/live", headers=AUTH).json()["now"].startswith("Stopped"))
 
+    def test_stopped_bot_never_shows_as_resting(self):
+        r = self.runners[Mode.TEST]
+        r.broker = SimBroker(100_000, {"AAPL": make_bars(uptrend())})
+        self.c.post("/api/test/start", headers=AUTH)
+        r.step("Resting until the next check.", log_it=False)
+        r.next_check = "2099-01-01T00:00:00+00:00"
+        self.store.update(Mode.TEST, {"running": False})  # Stop pressed during a check
+        live = self.c.get("/api/test/live", headers=AUTH).json()
+        self.assertTrue(live["now"].startswith("Stopped"))
+        self.assertIsNone(live["next_check"])
+
+    def test_summary_says_when_buying_was_blocked(self):
+        from autotrader.engine import CycleReport
+        rep = CycleReport(halted="market in a confirmed downtrend", checked=52)
+        self.assertIn("no new buys (market in a confirmed downtrend)", rep.summary())
+        self.assertNotIn("52", rep.summary())
+
     def test_reject_only_pending(self):
         aid = self.journal.queue_approval("live", "AAPL", "buy", 1, None, ["x"])
         self.journal.set_approval_status(aid, "expired")
