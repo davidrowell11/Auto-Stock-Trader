@@ -2,6 +2,11 @@
 # instead of installing Xcode, Visual Studio or Android Studio yourself.
 # Pull requests just check that the builds work. Each push to main that
 # changes the app publishes them on the "App downloads" release.
+#
+# Every build replaces the previous install rather than adding a second copy:
+# the app's name and ID never change, the build number goes up each time,
+# Windows uses an installer with a fixed AppId, and Android is always signed
+# with the same key (see "Signing key" below).
 name: build-apps
 on:
   pull_request:
@@ -13,6 +18,8 @@ on:
 
 env:
   FLUTTER_VERSION: "3.47.9"
+  # Goes up by one with every run, so each build is newer than the last.
+  BUILD_NUMBER: ${{ github.run_number }}
 
 jobs:
   macos:
@@ -26,15 +33,19 @@ jobs:
           cache: true
       - name: Build
         working-directory: app
-        run: flutter build macos --release
-      - name: Zip
+        run: flutter build macos --release --build-number "$BUILD_NUMBER"
+      - name: Disk image
+        # Opens to the app next to an Applications shortcut: drag it across and
+        # choose Replace to update.
         run: |
-          cd app/build/macos/Build/Products/Release
-          ditto -c -k --keepParent auto_stock_trader.app "$GITHUB_WORKSPACE/AutoStockTrader-mac.zip"
+          mkdir -p dmg
+          cp -R app/build/macos/Build/Products/Release/auto_stock_trader.app dmg/
+          ln -s /Applications dmg/Applications
+          hdiutil create -volname "Auto Stock Trader" -srcfolder dmg -ov -format UDZO AutoStockTrader-mac.dmg
       - uses: actions/upload-artifact@v4
         with:
           name: mac
-          path: AutoStockTrader-mac.zip
+          path: AutoStockTrader-mac.dmg
 
   windows:
     runs-on: windows-latest
@@ -47,17 +58,25 @@ jobs:
           cache: true
       - name: Build
         working-directory: app
-        run: flutter build windows --release
-      - name: Zip
+        run: flutter build windows --release --build-number "$BUILD_NUMBER"
+      - name: Installer
         shell: pwsh
-        run: Compress-Archive -Path app/build/windows/x64/runner/Release/* -DestinationPath AutoStockTrader-windows.zip
+        run: |
+          choco install innosetup -y --no-progress
+          $version = (Select-String -Path app/pubspec.yaml -Pattern '^version:\s*([0-9.]+)').Matches[0].Groups[1].Value
+          $env:APP_VERSION = "$version.$env:BUILD_NUMBER"
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" app/windows/installer.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Copy-Item app/build/installer/AutoStockTrader-windows-setup.exe .
       - uses: actions/upload-artifact@v4
         with:
           name: windows
-          path: AutoStockTrader-windows.zip
+          path: AutoStockTrader-windows-setup.exe
 
   android:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # to save the encrypted signing key the first time
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -69,9 +88,44 @@ jobs:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           channel: stable
           cache: true
+      - name: Signing key
+        # Android only updates an app in place when every version has the same
+        # signature. The key is made here once, encrypted with the
+        # ANDROID_KEY_PASSWORD secret, and kept (encrypted) on the private
+        # "android-signing-key" release. Nobody else ever sees it unencrypted.
+        env:
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if [ -z "$KEY_PASSWORD" ]; then
+            echo "::warning::No ANDROID_KEY_PASSWORD secret yet, so this build uses a temporary key and won't install over the previous app."
+            exit 0
+          fi
+          enc="$RUNNER_TEMP/keystore.enc"
+          jks="$RUNNER_TEMP/release.jks"
+          if gh release download android-signing-key -p keystore.enc -D "$RUNNER_TEMP" 2>/dev/null; then
+            openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 -in "$enc" -out "$jks" -pass env:KEY_PASSWORD
+          elif [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "No saved key yet; pull request builds don't create one."
+            exit 0
+          else
+            keytool -genkeypair -keystore "$jks" -storetype PKCS12 -alias autotrader \
+              -keyalg RSA -keysize 4096 -validity 36500 \
+              -storepass "$KEY_PASSWORD" -dname "CN=Auto Stock Trader"
+            openssl enc -e -aes-256-cbc -pbkdf2 -iter 600000 -salt -in "$jks" -out "$enc" -pass env:KEY_PASSWORD
+            gh release create android-signing-key "$enc" --prerelease \
+              --title "Android signing key (encrypted)" \
+              --notes "Used by the build to sign every Android version the same way. It's encrypted with the ANDROID_KEY_PASSWORD secret. Don't delete it: without it, the next Android update can't install over the old app."
+          fi
+          echo "ANDROID_KEYSTORE_PATH=$jks" >> "$GITHUB_ENV"
+          echo "ANDROID_KEYSTORE_PASSWORD=$KEY_PASSWORD" >> "$GITHUB_ENV"
       - name: Build
         working-directory: app
-        run: flutter build apk --release
+        run: flutter build apk --release --build-number "$BUILD_NUMBER"
+      - name: Remove the key file
+        if: always()
+        run: rm -f "$RUNNER_TEMP/release.jks"
       - name: Rename
         run: cp app/build/app/outputs/flutter-apk/app-release.apk AutoStockTrader-android.apk
       - uses: actions/upload-artifact@v4
@@ -96,6 +150,10 @@ jobs:
         run: |
           if ! gh release view app-latest >/dev/null 2>&1; then
             gh release create app-latest --title "App downloads" --target "$GITHUB_SHA" \
-              --notes "The latest app for Mac, Windows and Android. See docs/INSTALL_APP.md for how to open each one."
+              --notes "The latest app for Mac, Windows and Android. See docs/INSTALL_APP.md for how to install and update each one."
           fi
-          gh release upload app-latest AutoStockTrader-mac.zip AutoStockTrader-windows.zip AutoStockTrader-android.apk --clobber
+          gh release upload app-latest AutoStockTrader-mac.dmg AutoStockTrader-windows-setup.exe AutoStockTrader-android.apk --clobber
+          # Older formats from before installers, so there's only one file per platform.
+          for old in AutoStockTrader-mac.zip AutoStockTrader-windows.zip; do
+            gh release delete-asset app-latest "$old" -y 2>/dev/null || true
+          done

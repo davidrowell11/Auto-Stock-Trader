@@ -9,12 +9,13 @@ GitHub builds the app for you every time it changes, so you don't need Xcode,
 Visual Studio or Android Studio. Get the files from the
 [App downloads](https://github.com/davidrowell11/Auto-Stock-Trader/releases/tag/app-latest) page.
 
-**Mac** (`AutoStockTrader-mac.zip`)
+**Mac** (`AutoStockTrader-mac.dmg`)
 
-1. Download the zip and double-click it. You get `auto_stock_trader.app`.
-2. Drag it into **Applications**.
-3. Double-click it. The first time, macOS says it can't check the developer
-   (the app isn't signed with a paid Apple account). Click **Done**.
+1. Download the dmg and double-click it. A window opens with the app and an
+   **Applications** folder.
+2. Drag the app onto **Applications**.
+3. Double-click it in Applications. The first time, macOS says it can't check
+   the developer (the app isn't signed with a paid Apple account). Click **Done**.
 4. Open **System Settings > Privacy & Security**, scroll down to the message
    about auto_stock_trader, click **Open Anyway** and enter your Mac password.
    After this it opens normally.
@@ -22,21 +23,34 @@ Visual Studio or Android Studio. Get the files from the
 If step 4 doesn't show the button, open **Terminal** and paste
 `xattr -dr com.apple.quarantine /Applications/auto_stock_trader.app`, then open the app again.
 
-**Windows** (`AutoStockTrader-windows.zip`)
+**Windows** (`AutoStockTrader-windows-setup.exe`)
 
-1. Download the zip, right-click it and choose **Extract All**. Move the
-   folder somewhere permanent, such as `C:\Program Files\Auto Stock Trader`.
-2. Run `auto_stock_trader.exe`. If SmartScreen warns that the app is
+1. Download and run the setup file. If SmartScreen warns that the app is
    unrecognized, choose **More info > Run anyway**.
+2. Click through the installer. It installs to `C:\Program Files\Auto Stock Trader`
+   and adds a Start menu shortcut (and a desktop one if you tick the box).
 
 **Android** (`AutoStockTrader-android.apk`)
 
 1. On the phone, download the file and open it.
 2. Allow "install unknown apps" for your browser when asked.
 
-Each build is signed with a new test key, so to update on Android you may need
-to uninstall the old app first (you'll then type the server address and token
-again).
+## Updating to a new version
+
+Every build has the same app name and ID and a higher version number, so a new
+download replaces the old app instead of installing a second copy. Your server
+address and token are kept.
+
+- **Mac:** quit the app, open the new dmg and drag the app onto
+  **Applications** again. When asked, choose **Replace**. If macOS asks to let
+  the app use your saved login (keychain), choose **Always Allow**.
+- **Windows:** quit the app and run the new setup file. It updates the same
+  install (it closes the app for you if it's still open).
+- **Android:** open the new apk and tap **Update**. All builds are signed with
+  the same saved key, so Android accepts it as an update. The one exception is
+  the first build after the signing key was set up: if Android says the app
+  "conflicts with an existing package", uninstall the old one once and install
+  the new one. After that, updates install over the top.
 
 **iPhone** can't be downloaded this way: Apple only lets you install your own
 apps on an iPhone through Xcode on a Mac (see below), or TestFlight with a
