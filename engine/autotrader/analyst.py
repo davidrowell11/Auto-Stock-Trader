@@ -126,3 +126,34 @@ def _to_view(data) -> AnalystView:
                            [str(f) for f in data.get("red_flags", [])])
     except (KeyError, TypeError, ValueError) as exc:
         raise AnalystUnavailable(f"Malformed analyst view: {exc}") from exc
+
+
+ASK_SYSTEM_PROMPT = """You are the analyst inside the user's personal automated trading bot. Answer \
+the user's question about their bot, its trades or a stock in plain, friendly language a \
+non-expert can follow, in a few short paragraphs at most. The bot's current state is given as \
+JSON. Use web search when the question needs recent news or prices. Be honest about \
+uncertainty, and never promise returns."""
+
+
+def ask(client, question: str, context: dict, model: str = MODEL) -> str:
+    """Answer a free-form question from the app's chat box."""
+    try:
+        response = client.beta.messages.create(
+            model=model,
+            max_tokens=16000,
+            system=ASK_SYSTEM_PROMPT,
+            messages=[{
+                "role": "user",
+                "content": f"Bot state:\n{json.dumps(context, default=str)}\n\nQuestion: {question}",
+            }],
+            tools=[WEB_SEARCH_TOOL],
+            output_config={"effort": "medium"},
+            betas=["server-side-fallback-2026-07-01"],
+            fallbacks="default",
+        )
+    except Exception as exc:
+        raise AnalystUnavailable(f"Claude API error: {exc}") from exc
+    if response.stop_reason == "refusal":
+        raise AnalystUnavailable("The analyst declined to answer that")
+    text = "".join(getattr(b, "text", "") for b in response.content if getattr(b, "type", None) == "text")
+    return text.strip() or "Sorry, I couldn't come up with an answer. Try asking another way."

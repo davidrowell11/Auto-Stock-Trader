@@ -121,6 +121,7 @@ class Engine:
                                   order_id, [reason])
         self.journal.clear_stop(self.mode, p.symbol)
         report.sells.append(f"{p.symbol}: {reason}")
+        self.journal.add_event(self.mode, "sell", f"Sold {p.qty:g} {p.symbol}: {reason}")
         log.info("SELL %s x%s: %s", p.symbol, p.qty, reason)
 
     # ----- finding new buys -----
@@ -178,6 +179,8 @@ class Engine:
                 self.journal.queue_approval(self.mode, sig.symbol, "buy", size.qty, limit, reasons)
                 risk.register_buy(sig.symbol, size.qty, sig.price, sector)
                 report.queued.append(f"{sig.symbol} x{size.qty}")
+                self.journal.add_event(self.mode, "approval",
+                                       f"Wants to buy {size.qty} {sig.symbol} at about ${sig.price:.2f}. Tap to approve.")
                 continue
             try:
                 order_id = self.broker.submit_order(
@@ -192,6 +195,7 @@ class Engine:
             stop = strategy.initial_stop(sig.price, sig.atr, strategy.stop_multiple(sig.price, self.s))
             self.journal.save_stop(self.mode, sig.symbol, StopState(sig.price, stop, sig.price))
             report.buys.append(f"{sig.symbol} x{size.qty} @ ${sig.price:.2f}")
+            self.journal.add_event(self.mode, "buy", f"Bought {size.qty} {sig.symbol} at about ${sig.price:.2f}")
             log.info("BUY %s x%s @ %.2f (stop %.2f)", sig.symbol, size.qty, sig.price, stop)
 
     def _analyst_verdict(self, sig: Signal, is_penny: bool) -> AnalystView | str | None:

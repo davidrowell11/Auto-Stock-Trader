@@ -1,4 +1,3 @@
-import json
 import unittest
 from datetime import date, timedelta
 from types import SimpleNamespace
@@ -10,7 +9,7 @@ from autotrader.config import Settings
 from autotrader.engine import Engine
 from autotrader.journal import Journal
 from autotrader.signals.book import SignalBook
-from autotrader.signals.congress import CongressTrade, build_leaderboard, parse_trades, top_member_buys
+from autotrader.signals.congress import build_leaderboard, parse_trades, top_member_buys
 from autotrader.signals.sec import SecClient, parse_form4_purchases
 
 from helpers import downtrend, make_bars, uptrend
