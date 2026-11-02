@@ -104,5 +104,15 @@ class AlpacaBroker(Broker):
             )
         return str(self.trading.submit_order(req).id)
 
+    def open_order_symbols(self) -> set[str]:
+        from alpaca.trading.enums import QueryOrderStatus
+        from alpaca.trading.requests import GetOrdersRequest
+
+        orders = self.trading.get_orders(GetOrdersRequest(status=QueryOrderStatus.OPEN, limit=500))
+        return {o.symbol for o in orders}
+
+    def cancel_open_orders(self) -> None:
+        self.trading.cancel_orders()
+
     def is_market_open(self) -> bool:
         return bool(self.trading.get_clock().is_open)

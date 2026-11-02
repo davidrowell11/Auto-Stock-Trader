@@ -285,9 +285,14 @@ class DemoApi implements TraderApi {
       _running[mode] = running;
 
   @override
-  Future<List<String>> kill(String mode, {required bool sellAll}) async {
+  Future<KillResult> kill(String mode, {required bool sellAll}) async {
     _running[mode] = false;
-    return sellAll ? [for (final p in await positions(mode)) p.symbol] : [];
+    return (
+      sold: sellAll
+          ? [for (final p in await positions(mode)) p.symbol]
+          : <String>[],
+      failed: <String>[],
+    );
   }
 
   @override
@@ -301,7 +306,11 @@ class DemoApi implements TraderApi {
   );
 
   @override
-  Future<List<PriceBar>> bars(String symbol, {int days = 180}) async {
+  Future<List<PriceBar>> bars(
+    String symbol, {
+    int days = 180,
+    String mode = 'test',
+  }) async {
     var p = 50.0 + symbol.codeUnits.fold<int>(0, (a, b) => a + b) % 150;
     final now = DateTime.now();
     final r = Random(symbol.hashCode);

@@ -4,6 +4,9 @@ import 'package:http/http.dart' as http;
 
 import 'models.dart';
 
+/// What the kill switch sold, and what it couldn't sell.
+typedef KillResult = ({List<String> sold, List<String> failed});
+
 class ApiException implements Exception {
   ApiException(this.message);
   final String message;
@@ -25,9 +28,13 @@ abstract class TraderApi {
   Future<BotSettings> settings(String mode);
   Future<BotSettings> updateSettings(String mode, Map<String, dynamic> changes);
   Future<void> setRunning(String mode, bool running);
-  Future<List<String>> kill(String mode, {required bool sellAll});
+  Future<KillResult> kill(String mode, {required bool sellAll});
   Future<WeeklyReport> weekly(String mode);
-  Future<List<PriceBar>> bars(String symbol, {int days = 180});
+  Future<List<PriceBar>> bars(
+    String symbol, {
+    int days = 180,
+    String mode = 'test',
+  });
   Future<String> ask(String question, String mode);
 }
 
@@ -138,9 +145,12 @@ class HttpApi implements TraderApi {
       _send('POST', '/api/$mode/${running ? 'start' : 'stop'}');
 
   @override
-  Future<List<String>> kill(String mode, {required bool sellAll}) async {
+  Future<KillResult> kill(String mode, {required bool sellAll}) async {
     final r = await _send('POST', '/api/$mode/kill', {'sell_all': sellAll});
-    return [for (final s in r['sold'] as List) s.toString()];
+    return (
+      sold: [for (final s in r['sold'] as List) s.toString()],
+      failed: [for (final s in (r['failed'] as List?) ?? []) s.toString()],
+    );
   }
 
   @override
@@ -148,8 +158,15 @@ class HttpApi implements TraderApi {
       WeeklyReport.fromJson(await _send('GET', '/api/$mode/report/weekly'));
 
   @override
-  Future<List<PriceBar>> bars(String symbol, {int days = 180}) async => [
-    for (final j in await _send('GET', '/api/bars/$symbol?days=$days'))
+  Future<List<PriceBar>> bars(
+    String symbol, {
+    int days = 180,
+    String mode = 'test',
+  }) async => [
+    for (final j in await _send(
+      'GET',
+      '/api/bars/${Uri.encodeComponent(symbol)}?days=$days&mode=$mode',
+    ))
       PriceBar.fromJson(j),
   ];
 

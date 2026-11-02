@@ -65,7 +65,7 @@ class _DashboardState extends State<Dashboard> {
         // Benchmark: what the same starting money would be worth in SPY.
         try {
           final days = DateTime.now().difference(c.first.ts).inDays + 5;
-          final spy = await api.bars('SPY', days: days.clamp(5, 1000));
+          final spy = await api.bars('SPY', days: days.clamp(5, 1000), mode: m);
           final start = spy.where((x) => !x.t.isBefore(c.first.ts)).toList();
           if (start.length > 1) {
             final scale = c.first.equity / start.first.c;
@@ -86,6 +86,11 @@ class _DashboardState extends State<Dashboard> {
       });
     } on ApiException catch (e) {
       if (mounted) setState(() => error = e.message);
+    } catch (e) {
+      // e.g. the server sent something the app doesn't understand
+      if (mounted) {
+        setState(() => error = 'Unexpected reply from the bot server');
+      }
     }
   }
 
@@ -182,7 +187,7 @@ class _DashboardState extends State<Dashboard> {
             AppColors.gain,
             Icons.bolt_rounded,
           )
-        : ('Stopped', Colors.grey, Icons.stop_circle_outlined);
+        : ('Stopped', AppColors.muted, Icons.stop_circle_outlined);
     return GlassCard(
       glow: live ? AppColors.live : AppColors.accent,
       padding: const EdgeInsets.fromLTRB(20, 18, 20, 12),
@@ -199,7 +204,7 @@ class _DashboardState extends State<Dashboard> {
           const SizedBox(height: 18),
           Text(
             live ? 'Real account value' : 'Test account value',
-            style: t.bodyMedium?.copyWith(color: Colors.grey),
+            style: t.bodyMedium?.copyWith(color: AppColors.muted),
           ),
           const SizedBox(height: 4),
           Text(
@@ -218,7 +223,10 @@ class _DashboardState extends State<Dashboard> {
                   percent: s.todayChangePct ?? 0,
                 ),
                 const SizedBox(width: 8),
-                Text('today', style: t.bodySmall?.copyWith(color: Colors.grey)),
+                Text(
+                  'today',
+                  style: t.bodySmall?.copyWith(color: AppColors.muted),
+                ),
               ],
             ),
           const SizedBox(height: 14),
@@ -232,30 +240,25 @@ class _DashboardState extends State<Dashboard> {
                 'Bot',
               ),
               const SizedBox(width: 14),
-              if (bench.isNotEmpty) _legendDot(Colors.grey, 'Just holding SPY'),
+              if (bench.isNotEmpty)
+                _legendDot(AppColors.muted, 'Just holding SPY'),
               const Spacer(),
               if (s.lastCycle != null)
                 Text(
                   'checked ${ago(DateTime.parse(s.lastCycle!))}',
-                  style: t.bodySmall?.copyWith(color: Colors.grey),
+                  style: t.bodySmall?.copyWith(color: AppColors.muted),
                 ),
             ],
           ),
           if (s.error != null)
             Padding(
               padding: const EdgeInsets.only(top: 10),
-              child: Text(
-                s.error!,
-                style: const TextStyle(color: AppColors.loss),
-              ),
+              child: Text(s.error!, style: TextStyle(color: AppColors.loss)),
             ),
           if (s.halted != null)
             Padding(
               padding: const EdgeInsets.only(top: 10),
-              child: Text(
-                s.halted!,
-                style: const TextStyle(color: AppColors.warn),
-              ),
+              child: Text(s.halted!, style: TextStyle(color: AppColors.warn)),
             ),
           const SizedBox(height: 12),
           Row(
@@ -303,7 +306,7 @@ class _DashboardState extends State<Dashboard> {
               OutlinedButton.icon(
                 style: OutlinedButton.styleFrom(
                   foregroundColor: AppColors.loss,
-                  side: const BorderSide(color: AppColors.loss),
+                  side: BorderSide(color: AppColors.loss),
                   padding: const EdgeInsets.symmetric(
                     vertical: 14,
                     horizontal: 16,
@@ -342,7 +345,7 @@ class _DashboardState extends State<Dashboard> {
         Text(
           label,
           style: Theme.of(context).textTheme.bodySmall
-              ?.copyWith(color: Colors.grey),
+              ?.copyWith(color: AppColors.muted),
         ),
         const SizedBox(height: 2),
         Text(
@@ -373,7 +376,10 @@ class _DashboardState extends State<Dashboard> {
             child: const Text('Stop only'),
           ),
           FilledButton(
-            style: FilledButton.styleFrom(backgroundColor: AppColors.loss),
+            style: FilledButton.styleFrom(
+              backgroundColor: AppColors.loss,
+              foregroundColor: AppColors.onColor,
+            ),
             onPressed: () => Navigator.pop(c, 'sell'),
             child: const Text('Stop and sell all'),
           ),
@@ -381,9 +387,24 @@ class _DashboardState extends State<Dashboard> {
       ),
     );
     if (choice == null) return;
-    await _run(() async {
-      await api.kill(widget.mode, sellAll: choice == 'sell');
-    }, choice == 'sell' ? 'Bot stopped and holdings sold' : 'Bot stopped');
+    try {
+      final r = await api.kill(widget.mode, sellAll: choice == 'sell');
+      final msg = r.failed.isNotEmpty
+          ? 'Bot stopped, but it couldn\'t sell ${r.failed.join(', ')}. Check your broker app.'
+          : choice == 'sell'
+          ? 'Bot stopped and its holdings sold'
+          : 'Bot stopped';
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(msg)));
+      }
+    } on ApiException catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(e.message)));
+      }
+    }
+    await refresh();
   }
 
   Widget _approvalCard(Approval a) => Padding(
@@ -461,7 +482,7 @@ class _DashboardState extends State<Dashboard> {
           children: [
             Row(
               children: [
-                const Icon(Icons.savings_outlined, color: AppColors.test),
+                Icon(Icons.savings_outlined, color: AppColors.test),
                 const SizedBox(width: 10),
                 Expanded(
                   child: Text(
@@ -483,7 +504,7 @@ class _DashboardState extends State<Dashboard> {
             Text(
               'How much fake money the bot may use for this test.',
               style: Theme.of(context).textTheme.bodySmall
-                  ?.copyWith(color: Colors.grey),
+                  ?.copyWith(color: AppColors.muted),
             ),
             Slider(
               value: value,
@@ -510,7 +531,7 @@ class _DashboardState extends State<Dashboard> {
     child: GlassCard(
       child: Row(
         children: [
-          const Icon(Icons.insights_rounded, color: AppColors.accent),
+          Icon(Icons.insights_rounded, color: AppColors.accent),
           const SizedBox(width: 12),
           Expanded(
             child: Column(
@@ -579,7 +600,7 @@ class _DashboardState extends State<Dashboard> {
               Text(
                 '${h.qty.toStringAsFixed(h.qty % 1 == 0 ? 0 : 2)} shares · stop ${h.stop == null ? '—' : money.format(h.stop)}',
                 style: Theme.of(context).textTheme.bodySmall
-                    ?.copyWith(color: Colors.grey),
+                    ?.copyWith(color: AppColors.muted),
               ),
             ],
           ),
@@ -612,7 +633,7 @@ class _DashboardState extends State<Dashboard> {
       'sell' => (Icons.north_east_rounded, AppColors.loss),
       'approval' => (Icons.how_to_reg_rounded, AppColors.live),
       'kill' => (Icons.power_settings_new_rounded, AppColors.loss),
-      _ => (Icons.tune_rounded, Colors.grey),
+      _ => (Icons.tune_rounded, AppColors.muted),
     };
     return ListTile(
       dense: true,

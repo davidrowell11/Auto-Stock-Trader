@@ -103,6 +103,18 @@ class Journal:
                 (mode, symbol, state.entry_price, state.stop_price, state.highest_close, _now()),
             )
 
+    def owned_symbols(self, mode: str) -> set[str]:
+        """Stocks the bot bought and still tracks. Anything else in the account is yours."""
+        cur = self.db.execute("SELECT symbol FROM stops WHERE mode = ?", (mode,))
+        return {r[0] for r in cur.fetchall()}
+
+    def cancel_pending(self, mode: str) -> int:
+        with self.db:
+            cur = self.db.execute(
+                "UPDATE approvals SET status = 'cancelled' WHERE mode = ? AND status = 'pending'",
+                (mode,))
+        return cur.rowcount
+
     def clear_stop(self, mode: str, symbol: str) -> None:
         with self.db:
             self.db.execute("DELETE FROM stops WHERE mode = ? AND symbol = ?", (mode, symbol))

@@ -27,3 +27,10 @@ class Broker(ABC):
 
     @abstractmethod
     def is_market_open(self) -> bool: ...
+
+    def open_order_symbols(self) -> set[str]:
+        """Symbols with an order that hasn't filled yet."""
+        return set()
+
+    def cancel_open_orders(self) -> None:
+        """Cancel every unfilled order (used by the kill switch)."""

@@ -6,8 +6,9 @@ Every request (except /health) needs ``Authorization: Bearer <token>``, where
 the token is the ``AUTOTRADER_APP_TOKEN`` secret. You type the same token
 into the app once, when you connect it.
 
-Both bots share one lock, so a trading cycle, an approval and a kill-switch
-press can never run at the same time.
+Each bot has its own lock, so a trading cycle and an approval never run at the
+same time. The kill switch doesn't wait for the lock: it stops the bot at once
+(the cycle checks before every order) and sells straight away.
 """
 
 from __future__ import annotations
@@ -27,9 +28,8 @@ from pydantic import BaseModel, Field
 
 from . import penny, strategy
 from .broker.base import Broker
-from .config import HARD_LIMITS, Mode, Settings, load_settings
+from .config import Mode, Settings, load_settings
 from .engine import Engine
-from .indicators import atr as atr_fn
 from .journal import Journal, StopState
 from .models import OrderRequest, Side
 from .risk import RiskManager
@@ -45,6 +45,7 @@ class SettingsStore:
 
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
+        self._lock = threading.Lock()
         self.data: dict[str, dict] = {"test": {}, "live": {}}
         if self.path.exists():
             self.data.update(json.loads(self.path.read_text()))
@@ -53,9 +54,12 @@ class SettingsStore:
         return dict(self.data.get(mode.value, {}))
 
     def update(self, mode: Mode, changes: dict) -> None:
-        self.data.setdefault(mode.value, {}).update(changes)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps(self.data, indent=2))
+        with self._lock:
+            self.data.setdefault(mode.value, {}).update(changes)
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(self.data, indent=2))
+            tmp.replace(self.path)  # atomic, so a crash can't leave a half-written file
 
     def settings_for(self, mode: Mode) -> Settings:
         saved = self.get(mode)
@@ -67,9 +71,13 @@ class SettingsStore:
 class BotRunner:
     """One bot (Test or Live) running its cycle in a background thread."""
 
+    APPROVAL_MAX_AGE = timedelta(hours=24)
+
     def __init__(self, mode: Mode, store: SettingsStore, journal: Journal, lock: threading.RLock,
-                 broker_factory: Callable[[Mode], Broker], engine_kwargs: dict | None = None) -> None:
+                 broker_factory: Callable[[Mode], Broker], engine_kwargs: dict | None = None,
+                 live_enabled: bool = True) -> None:
         self.mode = mode
+        self.live_enabled = live_enabled
         self.store = store
         self.journal = journal
         self.lock = lock
@@ -83,6 +91,7 @@ class BotRunner:
             self.broker = None
             self.error = str(exc)
         self._stop = threading.Event()
+        self.halted_by_you = threading.Event()  # set by Stop or the kill switch, cleared by Start
         self._thread: threading.Thread | None = None
 
     @property
@@ -94,7 +103,8 @@ class BotRunner:
         return bool(self.store.get(self.mode).get("running", False))
 
     def engine(self) -> Engine:
-        return Engine(self.broker, self.settings, self.journal, **self.engine_kwargs)
+        return Engine(self.broker, self.settings, self.journal,
+                      keep_going=lambda: not self.halted_by_you.is_set(), **self.engine_kwargs)
 
     def run_once(self) -> None:
         if self.broker is None:
@@ -121,40 +131,56 @@ class BotRunner:
 
     # ----- actions from the app -----
     def approve(self, approval_id: int) -> dict:
-        with self.lock:
-            a = self.journal.get_approval(approval_id)
-            if a is None or a["mode"] != self.mode.value:
-                raise HTTPException(404, "No such approval")
-            if a["status"] != "pending":
-                raise HTTPException(409, f"Already {a['status']}")
-            if self.broker is None:
-                raise HTTPException(503, self.error or "Broker not connected")
-            account, positions = self.broker.get_account(), self.broker.get_positions()
-            for p in positions:
-                p.sector = sector_of(p.symbol)
-            bars = self.broker.get_daily_bars([a["symbol"]], 30).get(a["symbol"], [])
-            if not bars:
-                raise HTTPException(503, "No current price")
-            price = bars[-1].close
-            s = self.settings
-            is_penny = penny.is_penny(price, s)
-            risk = RiskManager(s, account, positions, self.journal.peak_equity(self.mode.value))
-            size = risk.size_buy(a["symbol"], price, sector_of(a["symbol"]), is_penny)
-            qty = min(int(a["qty"]), size.qty)  # re-checked: prices and the account may have moved
-            if qty < 1:
-                self.journal.set_approval_status(approval_id, "expired")
-                raise HTTPException(409, f"Can't buy now: {size.note}")
-            limit = penny.limit_price_for_buy(price) if is_penny else None
-            order_id = self.broker.submit_order(OrderRequest(a["symbol"], Side.BUY, qty, limit, "Approved in app"))
-            self.journal.record_trade(self.mode.value, a["symbol"], "buy", qty, price, order_id,
-                                      [*a["reasons"], "Approved by you in the app"])
-            atr = atr_fn(bars, 14)
-            stop = (strategy.initial_stop(price, atr, strategy.stop_multiple(price, s)) if atr
-                    else price * (1 - HARD_LIMITS.max_stop_loss_pct))
-            self.journal.save_stop(self.mode.value, a["symbol"], StopState(price, stop, price))
-            self.journal.set_approval_status(approval_id, "approved")
-            self.journal.add_event(self.mode.value, "buy", f"Bought {qty} {a['symbol']} at about ${price:.2f} (you approved)")
-            return {"bought": qty, "price": price, "stop": round(stop, 2)}
+        if self.mode is Mode.LIVE and not self.live_enabled:
+            raise HTTPException(403, "Live trading is off on the server (AUTOTRADER_LIVE_ENABLED)")
+        # A cycle can take a few minutes (analyst reviews); don't hang the app waiting.
+        if not self.lock.acquire(timeout=10):
+            raise HTTPException(409, "The bot is in the middle of a cycle. Try again in a minute.")
+        try:
+            return self._approve(approval_id)
+        finally:
+            self.lock.release()
+
+    def _approve(self, approval_id: int) -> dict:
+        a = self.journal.get_approval(approval_id)
+        if a is None or a["mode"] != self.mode.value:
+            raise HTTPException(404, "No such approval")
+        if a["status"] != "pending":
+            raise HTTPException(409, f"Already {a['status']}")
+        if self.broker is None:
+            raise HTTPException(503, self.error or "Broker not connected")
+        queued = datetime.fromisoformat(a["ts"])
+        if datetime.now(timezone.utc) - queued > self.APPROVAL_MAX_AGE:
+            self.journal.set_approval_status(approval_id, "expired")
+            raise HTTPException(409, "This suggestion is over a day old, so it expired")
+        engine = self.engine()
+        sig, problems = engine.recheck_buy(a["symbol"])
+        if sig is None or problems:
+            self.journal.set_approval_status(approval_id, "expired")
+            raise HTTPException(409, f"Can't buy now: {'; '.join(problems)}")
+        owned = self.journal.owned_symbols(self.mode.value)
+        account = self.broker.get_account()
+        positions = [p for p in self.broker.get_positions() if p.symbol in owned]
+        for p in positions:
+            p.sector = sector_of(p.symbol)
+        price = sig.price
+        s = engine.s
+        is_penny = penny.is_penny(price, s)
+        risk = RiskManager(s, account, positions, self.journal.peak_equity(self.mode.value))
+        size = risk.size_buy(a["symbol"], price, sector_of(a["symbol"]), is_penny)
+        qty = min(int(a["qty"]), size.qty)  # re-checked: prices and the account may have moved
+        if qty < 1:
+            self.journal.set_approval_status(approval_id, "expired")
+            raise HTTPException(409, f"Can't buy now: {size.note}")
+        limit = penny.limit_price_for_buy(price) if is_penny else None
+        order_id = self.broker.submit_order(OrderRequest(a["symbol"], Side.BUY, qty, limit, "Approved in app"))
+        self.journal.record_trade(self.mode.value, a["symbol"], "buy", qty, price, order_id,
+                                  [*a["reasons"], "Approved by you in the app"])
+        stop = strategy.initial_stop(price, sig.atr, strategy.stop_multiple(price, s))
+        self.journal.save_stop(self.mode.value, a["symbol"], StopState(price, stop, price))
+        self.journal.set_approval_status(approval_id, "approved")
+        self.journal.add_event(self.mode.value, "buy", f"Bought {qty} {a['symbol']} at about ${price:.2f} (you approved)")
+        return {"bought": qty, "price": price, "stop": round(stop, 2)}
 
     def reject(self, approval_id: int) -> None:
         with self.lock:
@@ -164,27 +190,42 @@ class BotRunner:
             self.journal.set_approval_status(approval_id, "rejected")
 
     def kill(self, sell_all: bool) -> dict:
-        """Kill switch: stop the bot now, and optionally sell everything it holds."""
+        """Kill switch: stop the bot now, and optionally sell everything it bought.
+
+        It doesn't wait for a running cycle: the cycle checks halted_by_you
+        before every order and stops. Your own holdings are never touched.
+        """
+        self.halted_by_you.set()
         self.store.update(self.mode, {"running": False})
-        sold = []
+        cancelled = self.journal.cancel_pending(self.mode.value)
+        sold, failed = [], []
         if sell_all and self.broker is not None:
-            with self.lock:
-                for p in self.broker.get_positions():
-                    limit = None
-                    if p.current_price < self.settings.penny_price:
-                        limit = round(p.current_price * 0.98, 4 if p.current_price < 1 else 2)
-                    try:
-                        self.broker.submit_order(OrderRequest(p.symbol, Side.SELL, p.qty, limit, "Kill switch"))
-                    except Exception as exc:
-                        log.error("Kill switch sell %s failed: %s", p.symbol, exc)
-                        continue
-                    self.journal.record_trade(self.mode.value, p.symbol, "sell", p.qty, p.current_price,
-                                              None, ["Kill switch"])
-                    self.journal.clear_stop(self.mode.value, p.symbol)
-                    sold.append(p.symbol)
+            try:
+                self.broker.cancel_open_orders()  # frees shares held by unfilled orders
+            except Exception as exc:
+                log.error("Kill switch couldn't cancel open orders: %s", exc)
+            owned = self.journal.owned_symbols(self.mode.value)
+            for p in self.broker.get_positions():
+                if p.symbol not in owned:
+                    continue
+                limit = None
+                if p.current_price < self.settings.penny_price:
+                    limit = round(p.current_price * 0.98, 4 if p.current_price < 1 else 2)
+                try:
+                    self.broker.submit_order(OrderRequest(p.symbol, Side.SELL, p.qty, limit, "Kill switch"))
+                except Exception as exc:
+                    log.error("Kill switch sell %s failed: %s", p.symbol, exc)
+                    failed.append(p.symbol)
+                    continue
+                self.journal.record_trade(self.mode.value, p.symbol, "sell", p.qty, p.current_price,
+                                          None, ["Kill switch"])
+                self.journal.clear_stop(self.mode.value, p.symbol)
+                sold.append(p.symbol)
         self.journal.add_event(self.mode.value, "kill",
                                "Kill switch: bot stopped" + (f", sold {', '.join(sold)}" if sold else ""))
-        return {"stopped": True, "sold": sold}
+        if failed:
+            self.journal.add_event(self.mode.value, "kill", f"Kill switch couldn't sell {', '.join(failed)}")
+        return {"stopped": True, "sold": sold, "failed": failed, "cancelled_approvals": cancelled}
 
 
 # ----- request bodies -----
@@ -251,10 +292,10 @@ def create_app(runners: dict[Mode, BotRunner], journal: Journal, token: str,
             "pending_approvals": len(journal.pending_approvals(r.mode.value)),
         }
         if r.broker is not None:
-            with r.lock:
-                acct = r.broker.get_account()
-                positions = r.broker.get_positions()
-                market_open = r.broker.is_market_open()
+            acct = r.broker.get_account()
+            owned = journal.owned_symbols(r.mode.value)
+            positions = [p for p in r.broker.get_positions() if p.symbol in owned]
+            market_open = r.broker.is_market_open()
             out.update({
                 "equity": acct.equity, "cash": acct.cash,
                 "today_change": acct.equity - acct.last_equity,
@@ -267,21 +308,21 @@ def create_app(runners: dict[Mode, BotRunner], journal: Journal, token: str,
     @app.get("/api/{mode}/positions", **secured)
     def positions(mode: str):
         r = runner(mode)
-        with r.lock:
-            held = broker_of(r).get_positions()
-            buys = {t["symbol"]: t for t in journal.trades(r.mode.value) if t["side"] == "buy"}
-            out = []
-            for p in held:
-                stop = journal.get_stop(r.mode.value, p.symbol)
-                out.append({
-                    "symbol": p.symbol, "qty": p.qty, "avg_price": p.avg_price,
-                    "price": p.current_price, "value": p.market_value,
-                    "gain": (p.current_price - p.avg_price) * p.qty,
-                    "gain_pct": p.current_price / p.avg_price - 1 if p.avg_price else 0.0,
-                    "stop": stop.stop_price if stop else None,
-                    "sector": sector_of(p.symbol),
-                    "why_bought": buys.get(p.symbol, {}).get("reasons", []),
-                })
+        owned = journal.owned_symbols(r.mode.value)
+        held = [p for p in broker_of(r).get_positions() if p.symbol in owned]
+        buys = {t["symbol"]: t for t in journal.trades(r.mode.value) if t["side"] == "buy"}
+        out = []
+        for p in held:
+            stop = journal.get_stop(r.mode.value, p.symbol)
+            out.append({
+                "symbol": p.symbol, "qty": p.qty, "avg_price": p.avg_price,
+                "price": p.current_price, "value": p.market_value,
+                "gain": (p.current_price - p.avg_price) * p.qty,
+                "gain_pct": p.current_price / p.avg_price - 1 if p.avg_price else 0.0,
+                "stop": stop.stop_price if stop else None,
+                "sector": sector_of(p.symbol),
+                "why_bought": buys.get(p.symbol, {}).get("reasons", []),
+            })
         return sorted(out, key=lambda x: -x["value"])
 
     @app.get("/api/{mode}/trades", **secured)
@@ -346,6 +387,7 @@ def create_app(runners: dict[Mode, BotRunner], journal: Journal, token: str,
         if r.mode is Mode.LIVE and not live_enabled:
             raise HTTPException(403, "Live trading is off on the server (AUTOTRADER_LIVE_ENABLED)")
         broker_of(r)
+        r.halted_by_you.clear()
         r.store.update(r.mode, {"running": True})
         journal.add_event(r.mode.value, "start", "Bot started")
         return {"running": True}
@@ -353,6 +395,7 @@ def create_app(runners: dict[Mode, BotRunner], journal: Journal, token: str,
     @app.post("/api/{mode}/stop", **secured)
     def stop(mode: str):
         r = runner(mode)
+        r.halted_by_you.set()
         r.store.update(r.mode, {"running": False})
         journal.add_event(r.mode.value, "stop", "Bot stopped")
         return {"running": False}
@@ -380,8 +423,7 @@ def create_app(runners: dict[Mode, BotRunner], journal: Journal, token: str,
     @app.get("/api/bars/{symbol}", **secured)
     def bars(symbol: str, days: int = 180, mode: str = "test"):
         r = runner(mode)
-        with r.lock:
-            data = broker_of(r).get_daily_bars([symbol.upper()], min(max(days, 5), 1000))
+        data = broker_of(r).get_daily_bars([symbol.upper()], min(max(days, 5), 1000))
         return [
             {"t": b.time.isoformat(), "o": b.open, "h": b.high, "l": b.low, "c": b.close, "v": b.volume}
             for b in data.get(symbol.upper(), [])
@@ -416,7 +458,6 @@ def main() -> None:
     base = load_settings()
     journal = Journal(base.journal_path)
     store = SettingsStore(Path(base.journal_path).with_name("app_settings.json"))
-    lock = threading.RLock()
 
     analyst, ask_fn = None, None
     if os.environ.get("ANTHROPIC_API_KEY"):
@@ -431,7 +472,8 @@ def main() -> None:
     sec = SecClient()
     runners = {}
     for mode in (Mode.TEST, Mode.LIVE):
-        r = BotRunner(mode, store, journal, lock, AlpacaBroker)
+        r = BotRunner(mode, store, journal, threading.RLock(), AlpacaBroker,
+                      live_enabled=live_enabled)
         bars_fetch = r.broker.get_daily_bars if r.broker else None
         r.engine_kwargs = {
             "filings_check": sec.penny_filings_check,

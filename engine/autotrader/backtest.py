@@ -171,7 +171,7 @@ def main(argv: list[str] | None = None) -> int:
     from .config import Mode
     from .universe import build_universe
 
-    settings = load_settings(mode=Mode.TEST, **({"budget": args.budget} if args.budget else {}))
+    settings = load_settings(mode=Mode.TEST, **({"budget": args.budget} if args.budget is not None else {}))
     test_days = round((args.months / 12 if args.months else args.years) * 252)
     symbols = build_universe(settings.always_watch, settings.never_buy)
     if "SPY" not in symbols:

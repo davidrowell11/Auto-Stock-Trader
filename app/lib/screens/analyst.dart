@@ -99,7 +99,7 @@ class _AnalystScreenState extends State<AnalystScreen> {
         const SizedBox(height: 6),
         Text(
           'Claude reviews every buy the rules want to make, checks the news, and can veto it.',
-          style: t.bodySmall?.copyWith(color: Colors.grey),
+          style: t.bodySmall?.copyWith(color: AppColors.muted),
         ),
         const SizedBox(height: 14),
         if (error != null) ErrorBox(error!, onRetry: load),
@@ -127,7 +127,7 @@ class _AnalystScreenState extends State<AnalystScreen> {
               if (chat.isEmpty)
                 Text(
                   'Try "Why did you sell Tesla?" or "What do you think of NVDA?"',
-                  style: t.bodySmall?.copyWith(color: Colors.grey),
+                  style: t.bodySmall?.copyWith(color: AppColors.muted),
                 ),
               for (final (fromUser, text) in chat) _bubble(fromUser, text),
               if (thinking)
@@ -154,6 +154,7 @@ class _AnalystScreenState extends State<AnalystScreen> {
                   ),
                   const SizedBox(width: 8),
                   IconButton.filled(
+                    tooltip: 'Send question',
                     onPressed: send,
                     icon: const Icon(Icons.arrow_upward_rounded),
                   ),
@@ -189,7 +190,7 @@ class _AnalystScreenState extends State<AnalystScreen> {
         Text(
           small,
           style: Theme.of(context).textTheme.bodySmall
-              ?.copyWith(color: Colors.grey),
+              ?.copyWith(color: AppColors.muted),
         ),
       ],
     ),
@@ -233,7 +234,7 @@ class _AnalystScreenState extends State<AnalystScreen> {
               Text(
                 money.format(v.price),
                 style: Theme.of(context).textTheme.bodySmall
-                    ?.copyWith(color: Colors.grey),
+                    ?.copyWith(color: AppColors.muted),
               ),
               const Spacer(),
               Pill(
@@ -272,7 +273,7 @@ class _AnalystScreenState extends State<AnalystScreen> {
           Text(
             v.day,
             style: Theme.of(context).textTheme.bodySmall
-                ?.copyWith(color: Colors.grey),
+                ?.copyWith(color: AppColors.muted),
           ),
         ],
       ),

@@ -8,6 +8,7 @@ approval while approve mode is on.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from . import penny, strategy
@@ -37,7 +38,8 @@ class CycleReport:
 class Engine:
     def __init__(self, broker: Broker, settings: Settings, journal: Journal,
                  filings_check: penny.FilingsCheck = penny.no_filings_check,
-                 signals=None, analyst=None, penny_needs_analyst: bool = True) -> None:
+                 signals=None, analyst=None, penny_needs_analyst: bool = True,
+                 keep_going: Callable[[], bool] = lambda: True) -> None:
         self.broker = broker
         self.s = settings
         self.journal = journal
@@ -46,6 +48,9 @@ class Engine:
         self.signals = signals  # SignalBook or None
         self.analyst = analyst  # Analyst or None
         self.penny_needs_analyst = penny_needs_analyst  # off only in backtests
+        # Checked before every order, so Stop or the kill switch takes effect mid-cycle.
+        self.keep_going = keep_going
+        self.open_orders: set[str] = set()
 
     @property
     def needs_approval(self) -> bool:
@@ -55,7 +60,11 @@ class Engine:
         report = CycleReport()
         account = self.broker.get_account()
         self.journal.record_equity(self.mode, account.equity)
-        positions = self.broker.get_positions()
+        # The bot only manages stocks it bought itself; anything else in the account is yours.
+        owned = self.journal.owned_symbols(self.mode)
+        positions = [p for p in self.broker.get_positions() if p.symbol in owned]
+        # Unfilled orders (e.g. penny limit orders) must not be placed again.
+        self.open_orders = self.broker.open_order_symbols()
         for p in positions:
             p.sector = sector_of(p.symbol)
 
@@ -78,6 +87,9 @@ class Engine:
                            report: CycleReport) -> list[Position]:
         kept: list[Position] = []
         for p in positions:
+            if p.symbol in self.open_orders:  # an order for it is still working
+                kept.append(p)
+                continue
             history = bars.get(p.symbol, [])
             atr = ind.atr(history, 14) if history else None
             multiple = strategy.stop_multiple(p.current_price, self.s)
@@ -99,30 +111,31 @@ class Engine:
                 reason = f"Hit stop at ${state.stop_price:.2f}"
             if reason is None and penny.is_penny(p.current_price, self.s) and penny.volume_drying_up(history):
                 reason = "Penny stock trading volume is drying up"
-            if reason is None:
-                kept.append(p)
-                continue
-            self._sell(p, reason, report)
+            if reason is None or not self._sell(p, reason, report):
+                kept.append(p)  # still held, so it still counts against the limits
         return kept
 
-    def _sell(self, p: Position, reason: str, report: CycleReport) -> None:
+    def _sell(self, p: Position, reason: str, report: CycleReport) -> bool:
         # Protective sells never wait for approval: getting out fast is the point.
         limit = None
         if penny.is_penny(p.current_price, self.s):
             limit = round(p.current_price * 0.98, 4 if p.current_price < 1 else 2)
         order = OrderRequest(p.symbol, Side.SELL, p.qty, limit, reason)
+        if not self.keep_going():
+            return False
         try:
             order_id = self.broker.submit_order(order)
         except Exception as exc:  # broker errors must not stop the rest of the cycle
             log.error("Sell %s failed: %s", p.symbol, exc)
             report.skipped.append(f"{p.symbol}: sell failed ({exc})")
-            return
+            return False
         self.journal.record_trade(self.mode, p.symbol, "sell", p.qty, p.current_price,
                                   order_id, [reason])
         self.journal.clear_stop(self.mode, p.symbol)
         report.sells.append(f"{p.symbol}: {reason}")
         self.journal.add_event(self.mode, "sell", f"Sold {p.qty:g} {p.symbol}: {reason}")
         log.info("SELL %s x%s: %s", p.symbol, p.qty, reason)
+        return True
 
     # ----- finding new buys -----
     def _scan_for_buys(self, universe: list[str], bars: dict[str, list[Bar]],
@@ -130,7 +143,7 @@ class Engine:
         held = {p.symbol for p in risk.positions}
         candidates: list[Signal] = []
         for symbol in universe:
-            if symbol in held or self.journal.has_pending(self.mode, symbol):
+            if symbol in held or symbol in self.open_orders or self.journal.has_pending(self.mode, symbol):
                 continue
             history = bars.get(symbol)
             if not history:
@@ -138,7 +151,11 @@ class Engine:
             sig = strategy.score_trend(symbol, history)
             if sig is None:
                 continue
-            problems = self._buy_problems(sig, history)
+            try:
+                problems = self._buy_problems(sig, history)
+            except Exception as exc:  # one bad symbol must not stop the whole scan
+                log.warning("Couldn't check %s: %s", symbol, exc)
+                problems = [f"couldn't be checked ({exc})"]
             if problems:
                 report.skipped.append(f"{symbol}: {'; '.join(problems)}")
                 continue
@@ -155,6 +172,9 @@ class Engine:
 
         reviews = 0
         for sig in candidates:
+            if not self.keep_going():
+                report.skipped.append("bot stopped mid-cycle")
+                return
             is_penny = penny.is_penny(sig.price, self.s)
             sector = sector_of(sig.symbol)
             size = risk.size_buy(sig.symbol, sig.price, sector, is_penny)
@@ -163,12 +183,13 @@ class Engine:
                 continue
             reasons = [f"Score {sig.score:.2f}", *sig.reasons, size.note]
             if self.analyst is not None:
-                if not self.journal.todays_view(self.mode, sig.symbol):
+                cached = self.journal.todays_view(self.mode, sig.symbol)
+                if not cached:
                     if reviews >= self.s.max_analyst_reviews:
                         report.skipped.append(f"{sig.symbol}: waiting for an analyst review next cycle")
                         continue
                     reviews += 1
-                verdict = self._analyst_verdict(sig, is_penny)
+                verdict = self._analyst_verdict(sig, is_penny, cached)
                 if isinstance(verdict, str):
                     report.skipped.append(f"{sig.symbol}: {verdict}")
                     continue
@@ -182,6 +203,9 @@ class Engine:
                 self.journal.add_event(self.mode, "approval",
                                        f"Wants to buy {size.qty} {sig.symbol} at about ${sig.price:.2f}. Tap to approve.")
                 continue
+            if not self.keep_going():
+                report.skipped.append("bot stopped mid-cycle")
+                return
             try:
                 order_id = self.broker.submit_order(
                     OrderRequest(sig.symbol, Side.BUY, size.qty, limit, reasons[0]))
@@ -198,9 +222,9 @@ class Engine:
             self.journal.add_event(self.mode, "buy", f"Bought {size.qty} {sig.symbol} at about ${sig.price:.2f}")
             log.info("BUY %s x%s @ %.2f (stop %.2f)", sig.symbol, size.qty, sig.price, stop)
 
-    def _analyst_verdict(self, sig: Signal, is_penny: bool) -> AnalystView | str | None:
+    def _analyst_verdict(self, sig: Signal, is_penny: bool,
+                         cached: dict | None = None) -> AnalystView | str | None:
         """The analyst's approval, a reason string to skip, or None if it was unavailable."""
-        cached = self.journal.todays_view(self.mode, sig.symbol)
         if cached:
             view = AnalystView(cached["action"], cached["confidence"], cached["reasoning"],
                                cached["red_flags"])
@@ -228,6 +252,16 @@ class Engine:
         if view.confidence < floor:
             return f"analyst confidence {view.confidence:.0%} is below the {floor:.0%} needed"
         return view
+
+    def recheck_buy(self, symbol: str) -> tuple[Signal | None, list[str]]:
+        """Run the buy rules again for one stock (used when you approve a queued buy)."""
+        history = self.broker.get_daily_bars([symbol], HISTORY_DAYS).get(symbol, [])
+        if not history:
+            return None, ["no current prices"]
+        sig = strategy.score_trend(symbol, history)
+        if sig is None:
+            return None, ["the uptrend no longer holds"]
+        return sig, self._buy_problems(sig, history)
 
     def _buy_problems(self, sig: Signal, history: list[Bar]) -> list[str]:
         asset = self.broker.get_asset(sig.symbol)

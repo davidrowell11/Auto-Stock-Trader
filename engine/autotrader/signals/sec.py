@@ -8,6 +8,7 @@ up to 10 requests a second; this client stays well under that.
 from __future__ import annotations
 
 import os
+import time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
@@ -55,21 +56,28 @@ class SecClient:
         self.fetch = fetch or RateLimited()
         self.today = today
         self._ciks: dict[str, int] | None = None
-        self._filings: dict[str, list[Filing]] = {}
+        self._ciks_at = 0.0
+        self._filings: dict[str, tuple[float, list[Filing]]] = {}
+
+    # The server runs for weeks, so cached filings are refreshed regularly.
+    FILINGS_TTL = 6 * 3600
+    TICKERS_TTL = 7 * 24 * 3600
 
     def _today(self) -> date:
         return self.today or date.today()
 
     def cik(self, symbol: str) -> int | None:
-        if self._ciks is None:
+        if self._ciks is None or time.monotonic() - self._ciks_at > self.TICKERS_TTL:
             data = self.fetch.json(TICKERS_URL, self.headers)
             self._ciks = {row["ticker"].upper(): int(row["cik_str"]) for row in data.values()}
+            self._ciks_at = time.monotonic()
         return self._ciks.get(symbol.upper().replace(".", "-"))
 
     def filings(self, symbol: str) -> list[Filing]:
-        """Recent filings for a company, newest first (cached per run)."""
-        if symbol in self._filings:
-            return self._filings[symbol]
+        """Recent filings for a company, newest first (cached for a few hours)."""
+        cached = self._filings.get(symbol)
+        if cached and time.monotonic() - cached[0] < self.FILINGS_TTL:
+            return cached[1]
         cik = self.cik(symbol)
         if cik is None:
             return []
@@ -81,7 +89,7 @@ class SecClient:
                 recent["primaryDocument"],
             )
         ]
-        self._filings[symbol] = out
+        self._filings[symbol] = (time.monotonic(), out)
         return out
 
     # ----- insider buying (Form 4) -----
@@ -111,7 +119,7 @@ class SecClient:
         """Fails closed: if the company can't be checked, the bot doesn't buy."""
         try:
             filings = self.filings(symbol)
-        except OSError as exc:
+        except Exception as exc:  # network, rate limit page, odd JSON: all fail closed
             return False, f"Couldn't check SEC filings ({exc})"
         if not filings:
             return False, "No SEC filings found, so the company can't be checked"

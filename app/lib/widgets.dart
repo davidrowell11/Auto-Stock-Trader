@@ -202,63 +202,72 @@ class EquityChart extends StatelessWidget {
     final all = [...points, ...benchmark].map((p) => p.equity);
     final minY = all.reduce(min), maxY = all.reduce(max);
     final pad = (maxY - minY) * 0.12 + 1;
-    return SizedBox(
-      height: height,
-      child: LineChart(
-        LineChartData(
-          minY: minY - pad,
-          maxY: maxY + pad,
-          gridData: const FlGridData(show: false),
-          borderData: FlBorderData(show: false),
-          titlesData: const FlTitlesData(show: false),
-          lineTouchData: LineTouchData(
-            touchTooltipData: LineTouchTooltipData(
-              getTooltipColor: (_) =>
-                  isDark(context) ? const Color(0xFF1C2536) : Colors.white,
-              getTooltipItems: (spots) => [
-                for (final s in spots)
-                  LineTooltipItem(
-                    moneyRound.format(s.y),
-                    TextStyle(
-                      color: s.barIndex == 0 ? color : Colors.grey,
-                      fontWeight: FontWeight.w700,
+    final change = points.last.equity / points.first.equity - 1;
+    final label =
+        'Account value chart: \$${points.first.equity.toStringAsFixed(0)} to '
+        '\$${points.last.equity.toStringAsFixed(0)}, '
+        '${up ? 'up' : 'down'} ${(change.abs() * 100).toStringAsFixed(1)}%';
+    return Semantics(
+      label: label,
+      excludeSemantics: true,
+      child: SizedBox(
+        height: height,
+        child: LineChart(
+          LineChartData(
+            minY: minY - pad,
+            maxY: maxY + pad,
+            gridData: const FlGridData(show: false),
+            borderData: FlBorderData(show: false),
+            titlesData: const FlTitlesData(show: false),
+            lineTouchData: LineTouchData(
+              touchTooltipData: LineTouchTooltipData(
+                getTooltipColor: (_) =>
+                    isDark(context) ? const Color(0xFF1C2536) : Colors.white,
+                getTooltipItems: (spots) => [
+                  for (final s in spots)
+                    LineTooltipItem(
+                      moneyRound.format(s.y),
+                      TextStyle(
+                        color: s.barIndex == 0 ? color : AppColors.muted,
+                        fontWeight: FontWeight.w700,
+                      ),
                     ),
-                  ),
-              ],
+                ],
+              ),
             ),
-          ),
-          lineBarsData: [
-            LineChartBarData(
-              spots: points.map(spot).toList(),
-              isCurved: true,
-              curveSmoothness: 0.25,
-              color: color,
-              barWidth: 2.6,
-              dotData: const FlDotData(show: false),
-              belowBarData: BarAreaData(
-                show: true,
-                gradient: LinearGradient(
-                  begin: Alignment.topCenter,
-                  end: Alignment.bottomCenter,
-                  colors: [
-                    color.withValues(alpha: 0.28),
-                    color.withValues(alpha: 0.0),
-                  ],
+            lineBarsData: [
+              LineChartBarData(
+                spots: points.map(spot).toList(),
+                isCurved: true,
+                curveSmoothness: 0.25,
+                color: color,
+                barWidth: 2.6,
+                dotData: const FlDotData(show: false),
+                belowBarData: BarAreaData(
+                  show: true,
+                  gradient: LinearGradient(
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                    colors: [
+                      color.withValues(alpha: 0.28),
+                      color.withValues(alpha: 0.0),
+                    ],
+                  ),
                 ),
               ),
-            ),
-            if (benchmark.length > 1)
-              LineChartBarData(
-                spots: benchmark.map(spot).toList(),
-                isCurved: true,
-                color: Colors.grey.withValues(alpha: 0.7),
-                barWidth: 1.4,
-                dashArray: [5, 4],
-                dotData: const FlDotData(show: false),
-              ),
-          ],
+              if (benchmark.length > 1)
+                LineChartBarData(
+                  spots: benchmark.map(spot).toList(),
+                  isCurved: true,
+                  color: Colors.grey.withValues(alpha: 0.7),
+                  barWidth: 1.4,
+                  dashArray: [5, 4],
+                  dotData: const FlDotData(show: false),
+                ),
+            ],
+          ),
+          duration: const Duration(milliseconds: 600),
         ),
-        duration: const Duration(milliseconds: 600),
       ),
     );
   }
@@ -310,7 +319,7 @@ class ErrorBox extends StatelessWidget {
     glow: AppColors.loss,
     child: Row(
       children: [
-        const Icon(Icons.error_outline_rounded, color: AppColors.loss),
+        Icon(Icons.error_outline_rounded, color: AppColors.loss),
         const SizedBox(width: 12),
         Expanded(child: Text(message)),
         if (onRetry != null)
