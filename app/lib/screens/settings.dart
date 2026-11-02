@@ -102,6 +102,41 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
           ),
         ],
+        if (test != null && live != null) ...[
+          const SectionTitle('Trading hours'),
+          GlassCard(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'The bot works 4am to 8pm New York time on weekdays. Outside regular hours '
+                  '(9:30am to 4pm) it only uses limit orders and sells to protect your money. '
+                  'Penny stocks are only bought in regular hours.',
+                  style: t.bodySmall?.copyWith(color: AppColors.muted),
+                ),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Test: buy before and after hours'),
+                  subtitle: const Text('New buys from 4am and until 8pm'),
+                  value: test!.afterHoursBuys,
+                  activeThumbColor: AppColors.test,
+                  onChanged: (v) => save('test', {'after_hours_buys': v}),
+                ),
+                const Divider(),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Live: buy before and after hours'),
+                  subtitle: const Text(
+                    'Real money. Prices jump more outside regular hours, so try it in Test first.',
+                  ),
+                  value: live!.afterHoursBuys,
+                  activeThumbColor: AppColors.live,
+                  onChanged: (v) => save('live', {'after_hours_buys': v}),
+                ),
+              ],
+            ),
+          ),
+        ],
         if (test != null) ...[
           const SectionTitle('Your stock lists'),
           GlassCard(

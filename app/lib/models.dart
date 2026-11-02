@@ -21,6 +21,7 @@ class Summary {
     this.invested,
     this.positions,
     this.marketOpen,
+    this.session,
     this.mood,
     this.moodLevel,
     this.buyingPaused,
@@ -38,6 +39,7 @@ class Summary {
   final double? equity, cash, todayChange, todayChangePct, invested;
   final int? positions;
   final bool? marketOpen;
+  final String? session; // regular, pre (4am-9:30am), after (4pm-8pm) or closed
   final String? mood; // market mood note from the last cycle
   final String? moodLevel; // calm, cautious, risk-off or unknown
   final String? buyingPaused; // set when Live stopped itself for safety
@@ -61,6 +63,7 @@ class Summary {
     invested: _dn(j['invested']),
     positions: (j['positions'] as num?)?.toInt(),
     marketOpen: j['market_open'] as bool?,
+    session: j['session'] as String?,
     mood: j['mood'] as String?,
     moodLevel: j['mood_level'] as String?,
     buyingPaused: j['buying_paused'] as String?,
@@ -329,9 +332,11 @@ class BotSettings {
     required this.maxOpenPositions,
     required this.dailyLossPct,
     required this.cashReservePct,
+    this.afterHoursBuys = false,
   });
   final double? budget;
   final bool approveMode;
+  final bool afterHoursBuys; // new buys in pre-market and after hours
   final List<String> alwaysWatch, neverBuy;
   final double maxPositionPct, dailyLossPct, cashReservePct;
   final int maxOpenPositions;
@@ -344,6 +349,7 @@ class BotSettings {
     maxOpenPositions: (j['max_open_positions'] as num?)?.toInt() ?? 15,
     dailyLossPct: _d(j['daily_loss_pct']),
     cashReservePct: _d(j['cash_reserve_pct']),
+    afterHoursBuys: j['after_hours_buys'] as bool? ?? false,
   );
 }
 

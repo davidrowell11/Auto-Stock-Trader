@@ -26,6 +26,7 @@ class DemoApi implements TraderApi {
       maxOpenPositions: 15,
       dailyLossPct: 0.02,
       cashReservePct: 0.10,
+      afterHoursBuys: true,
     ),
     'live': BotSettings(
       budget: 1000,
@@ -88,6 +89,7 @@ class DemoApi implements TraderApi {
       invested: last * 0.68,
       positions: (await positions(mode)).length,
       marketOpen: true,
+      session: 'regular',
       moodLevel: 'calm',
       mood: 'Market calm: SPY \$683.20 is above its 200-day average',
     );
@@ -279,6 +281,7 @@ class DemoApi implements TraderApi {
       maxOpenPositions: s.maxOpenPositions,
       dailyLossPct: s.dailyLossPct,
       cashReservePct: s.cashReservePct,
+      afterHoursBuys: changes['after_hours_buys'] as bool? ?? s.afterHoursBuys,
     );
   }
 

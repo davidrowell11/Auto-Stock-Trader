@@ -12,11 +12,22 @@ from __future__ import annotations
 
 import os
 from collections.abc import Iterable
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from ..config import Mode
 from ..models import Account, Asset, Bar, OrderRequest, OrderUpdate, Position, Side
 from .base import Broker
+
+
+NEW_YORK = ZoneInfo("America/New_York")
+EXTENDED_START = time(4, 0)  # pre-market opens
+EXTENDED_END = time(20, 0)  # after-hours trading ends
+
+
+def _naive_ny(value: datetime) -> datetime:
+    """A calendar time as naive New York time (Alpaca returns it naive already)."""
+    return value.astimezone(NEW_YORK).replace(tzinfo=None) if value.tzinfo else value
 
 
 class MissingKeys(RuntimeError):
@@ -42,6 +53,8 @@ class AlpacaBroker(Broker):
         self.data_feed = data_feed  # "iex" is free; "sip" needs a paid plan
         self.trading = TradingClient(key, secret, paper=(mode is Mode.TEST))
         self.data = StockHistoricalDataClient(key, secret)
+        self._calendar_day = None
+        self._calendar: tuple[datetime, datetime] | None = None
 
     def get_account(self) -> Account:
         a = self.trading.get_account()
@@ -94,10 +107,13 @@ class AlpacaBroker(Broker):
         from alpaca.trading.requests import LimitOrderRequest, MarketOrderRequest
 
         side = OrderSide.BUY if order.side is Side.BUY else OrderSide.SELL
+        if order.extended_hours and order.limit_price is None:
+            raise ValueError("Orders outside regular hours need a limit price")
         if order.limit_price is not None:
             req = LimitOrderRequest(
                 symbol=order.symbol, qty=order.qty, side=side,
                 time_in_force=TimeInForce.DAY, limit_price=order.limit_price,
+                extended_hours=order.extended_hours,
             )
         else:
             req = MarketOrderRequest(
@@ -125,3 +141,42 @@ class AlpacaBroker(Broker):
 
     def is_market_open(self) -> bool:
         return bool(self.trading.get_clock().is_open)
+
+    def market_session(self) -> str:
+        if self.is_market_open():
+            return "regular"
+        now = datetime.now(NEW_YORK)
+        day = self._trading_day(now.date())
+        if day is None:  # weekend or market holiday: no extended hours either
+            return "closed"
+        open_, close = day
+        t = now.replace(tzinfo=None)
+        if datetime.combine(t.date(), EXTENDED_START) <= t < open_:
+            return "pre"
+        if close <= t < datetime.combine(t.date(), EXTENDED_END):
+            return "after"
+        return "closed"
+
+    def _trading_day(self, day) -> tuple[datetime, datetime] | None:
+        """Today's regular open and close (New York time, naive), or None if the market is shut all day.
+
+        Looked up once a day; it knows holidays and early-close days.
+        """
+        if self._calendar_day != day:
+            from alpaca.trading.requests import GetCalendarRequest
+
+            days = self.trading.get_calendar(GetCalendarRequest(start=day, end=day))
+            hit = next((d for d in days if d.date == day), None)
+            self._calendar = None if hit is None else (_naive_ny(hit.open), _naive_ny(hit.close))
+            self._calendar_day = day
+        return self._calendar
+
+    def latest_prices(self, symbols: Iterable[str]) -> dict[str, float]:
+        from alpaca.data.requests import StockLatestTradeRequest
+
+        symbols = sorted(set(symbols))
+        if not symbols:
+            return {}
+        trades = self.data.get_stock_latest_trade(
+            StockLatestTradeRequest(symbol_or_symbols=symbols, feed=self.data_feed))
+        return {s: float(t.price) for s, t in trades.items() if t is not None and t.price}

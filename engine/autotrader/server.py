@@ -14,6 +14,7 @@ selling, so the same stock is never sold twice.
 
 from __future__ import annotations
 
+import dataclasses
 import hmac
 import json
 import logging
@@ -31,7 +32,7 @@ from pydantic import BaseModel, Field
 from . import penny, strategy
 from .broker.base import Broker
 from .config import HARD_LIMITS, Mode, Settings, load_settings
-from .engine import APPROVAL_MAX_AGE, Engine, bot_positions
+from .engine import APPROVAL_MAX_AGE, Engine, bot_positions, limit_for
 from .readiness import live_checks, test_results
 from .journal import Journal, StopState
 from .models import OrderRequest, Side
@@ -40,7 +41,7 @@ from .universe import sector_of
 
 log = logging.getLogger("autotrader.server")
 
-EDITABLE = ("budget", "approve_mode", "always_watch", "never_buy")
+EDITABLE = ("budget", "approve_mode", "always_watch", "never_buy", "after_hours_buys")
 
 
 class SettingsStore:
@@ -76,6 +77,8 @@ class SettingsStore:
         saved = self.get(mode)
         overrides = {k: (tuple(v) if isinstance(v, list) else v)
                      for k, v in saved.items() if k in EDITABLE}
+        # After-hours buying starts on for Test (fake money) and off for Live.
+        overrides.setdefault("after_hours_buys", mode is Mode.TEST)
         if mode is Mode.LIVE:
             # Start small: never more than the starter cap of real money, whatever the file says.
             # Live never falls back to the whole account: without a saved cap it stays at the starter cap.
@@ -86,6 +89,9 @@ class SettingsStore:
             elif self.starter_active():
                 overrides["budget"] = min(budget, cap)
         return load_settings(mode=mode, **overrides)
+
+
+SESSION_NOTE = {"pre": " (pre-market, limit orders only)", "after": " (after hours, limit orders only)"}
 
 
 def _now_iso() -> str:
@@ -159,12 +165,27 @@ class BotRunner:
     def running(self) -> bool:
         return bool(self.store.get(self.mode).get("running", False))
 
-    def engine(self) -> Engine:
+    def engine(self, session: str | None = None) -> Engine:
+        if session is None:
+            session = self.session()
         return Engine(self.broker, self.settings, self.journal,
                       keep_going=lambda: not self.halted_by_you.is_set(),
                       pause_buying=self.store.get(self.mode).get("buying_paused"),
-                      progress=self.step,
+                      progress=self.step, session=session,
                       **self.engine_kwargs)
+
+    def session(self) -> str:
+        """The market session right now; "closed" if the broker can't say."""
+        if self.broker is None:
+            return "closed"
+        try:
+            return self.broker.market_session()
+        except Exception as exc:
+            log.warning("Couldn't get the market session: %s", exc)
+            try:
+                return "regular" if self.broker.is_market_open() else "closed"
+            except Exception:
+                return "closed"
 
     def pause_buying(self, reason: str) -> None:
         """Automatic safety stop: no new buys until you press Start. Holdings stay protected."""
@@ -190,15 +211,17 @@ class BotRunner:
             if lost >= HARD_LIMITS.live_auto_stop_drawdown:
                 self.pause_buying(f"Live lost {lost:.0%} of its money from its peak")
 
-    def run_once(self) -> None:
+    def run_once(self, session: str | None = None) -> None:
         if self.broker is None:
             return
+        if session is None:
+            session = self.session()
         self.next_check = None
         with self.lock:
             self.busy = True
             try:
-                self.step("Starting a check")
-                report = self.engine().run_cycle()
+                self.step("Starting a check" + SESSION_NOTE.get(session, ""))
+                report = self.engine(session).run_cycle()
                 self.check_live_safety(self.broker.get_account().equity)
             finally:
                 self.busy = False
@@ -224,13 +247,13 @@ class BotRunner:
                     self.next_check = None
                 elif self.broker is None:
                     self.step(f"Can't reach the broker: {self.error}", log_it=False)
-                elif not self.broker.is_market_open():
-                    self.step("Waiting for the market to open (9:30am to 4pm New York time, weekdays)",
-                              log_it=False)
+                elif (session := self.session()) == "closed":
+                    self.step("Market closed. Trading runs 4am to 8pm New York time on weekdays "
+                              "(regular hours 9:30am to 4pm)", log_it=False)
                     wait = min(wait, 60)  # notice the open (and Start) quickly
                     self.next_check = None
                 else:
-                    self.run_once()
+                    self.run_once(session)
                     self.error = None
                     self.failures = 0
                     if self.running:  # not if Stop was pressed during the check
@@ -298,12 +321,17 @@ class BotRunner:
             raise HTTPException(409, f"Can't buy now: {'; '.join(problems)}")
         account = self.broker.get_account()
         price = sig.price
+        if engine.extended:
+            price = self.broker.latest_prices([a["symbol"]]).get(a["symbol"], price)
         s = engine.s
         is_penny = penny.is_penny(price, s)
+        # Pre-market/after hours with after-hours buying on: a limit order now. Otherwise (closed,
+        # buying off, or a penny stock) the order waits for the 9:30am open, as it always has.
+        extended = engine.extended and s.after_hours_buys and not is_penny
         risk = RiskManager(s, account, positions, self.journal.peak_equity(self.mode.value),
                            mood_multiplier=engine.mood.size_multiplier)
         asset = engine.assets.get(a["symbol"])
-        fractional = bool(getattr(asset, "fractionable", False)) and not is_penny
+        fractional = bool(getattr(asset, "fractionable", False)) and not is_penny and not extended
         size = risk.size_buy(a["symbol"], price, sector_of(a["symbol"]), is_penny, fractional)
         qty = min(float(a["qty"]), size.qty)  # re-checked: prices and the account may have moved
         if not fractional:
@@ -311,8 +339,9 @@ class BotRunner:
         if qty <= 0:
             self.journal.set_approval_status(approval_id, "expired")
             raise HTTPException(409, f"Can't buy now: {size.note}")
-        limit = penny.limit_price_for_buy(price) if is_penny else None
-        order_id = self.broker.submit_order(OrderRequest(a["symbol"], Side.BUY, qty, limit, "Approved in app"))
+        limit = limit_for(Side.BUY, price, extended, is_penny)
+        order_id = self.broker.submit_order(
+            OrderRequest(a["symbol"], Side.BUY, qty, limit, "Approved in app", extended))
         self.journal.record_trade(self.mode.value, a["symbol"], "buy", qty, price, order_id,
                                   [*a["reasons"], "Approved by you in the app"])
         stop = strategy.initial_stop(price, sig.atr, strategy.stop_multiple(price, s))
@@ -357,7 +386,8 @@ class BotRunner:
         return {"stopped": True, "sold": sold, "failed": failed, "cancelled_approvals": cancelled}
 
     def _sell_everything(self) -> tuple[list[str], list[str]]:
-        engine = Engine(self.broker, self.settings, self.journal)
+        session = self.session()
+        engine = Engine(self.broker, self.settings, self.journal, session=session)
         mode = self.mode.value
         for symbol in self.journal.owned_symbols(mode):  # unfilled buys first
             state = self.journal.get_stop(mode, symbol)
@@ -367,6 +397,10 @@ class BotRunner:
                 except Exception as exc:
                     log.error("Kill switch couldn't cancel the %s buy: %s", symbol, exc)
         positions, working = engine.sync_holdings()
+        if engine.extended and positions:
+            latest = self.broker.latest_prices(p.symbol for p in positions)
+            positions = [dataclasses.replace(p, current_price=latest.get(p.symbol, p.current_price))
+                         for p in positions]
         sold, failed = [], []
         for p in positions:
             state = self.journal.get_stop(mode, p.symbol)
@@ -376,11 +410,12 @@ class BotRunner:
                 else:
                     failed.append(p.symbol)  # buy still being cancelled; press again in a moment
                 continue
-            limit = None
-            if penny.is_penny(p.current_price, engine.s):
-                limit = round(p.current_price * 0.98, 4 if p.current_price < 1 else 2)
+            # Closed market: a market order waits for the open. Pre-market/after hours: limit order.
+            limit = limit_for(Side.SELL, p.current_price, engine.extended,
+                              penny.is_penny(p.current_price, engine.s))
             try:
-                order_id = self.broker.submit_order(OrderRequest(p.symbol, Side.SELL, p.qty, limit, "Kill switch"))
+                order_id = self.broker.submit_order(
+                    OrderRequest(p.symbol, Side.SELL, p.qty, limit, "Kill switch", engine.extended))
             except Exception as exc:
                 log.error("Kill switch sell %s failed: %s", p.symbol, exc)
                 failed.append(p.symbol)
@@ -396,6 +431,7 @@ class SettingsUpdate(BaseModel):
     budget: float | None = Field(default=None, ge=0)
     clear_budget: bool = False
     approve_mode: bool | None = None
+    after_hours_buys: bool | None = None
     always_watch: list[str] | None = None
     never_buy: list[str] | None = None
 
@@ -451,6 +487,7 @@ def create_app(runners: dict[Mode, BotRunner], journal: Journal, token: str,
         out = {
             "mode": r.mode.value, "running": r.running, "error": r.error, "halted": r.halted,
             "last_cycle": r.last_cycle, "budget": s.budget, "approve_mode": s.approve_mode,
+            "after_hours_buys": s.after_hours_buys,
             "mood": r.mood, "mood_level": r.mood_level, "buying_paused": r.store.get(r.mode).get("buying_paused"),
             "live_enabled": live_enabled,
             "pending_approvals": len(journal.pending_approvals(r.mode.value)),
@@ -458,13 +495,14 @@ def create_app(runners: dict[Mode, BotRunner], journal: Journal, token: str,
         if r.broker is not None:
             acct = r.broker.get_account()
             positions = bot_positions(r.broker, journal, r.mode.value)
-            market_open = r.broker.is_market_open()
+            session = r.session()
+            market_open = session == "regular"
             out.update({
                 "equity": acct.equity, "cash": acct.cash,
                 "today_change": acct.equity - acct.last_equity,
                 "today_change_pct": (acct.equity / acct.last_equity - 1) if acct.last_equity else 0.0,
                 "invested": sum(p.market_value for p in positions),
-                "positions": len(positions), "market_open": market_open,
+                "positions": len(positions), "market_open": market_open, "session": session,
             })
         return out
 
@@ -547,6 +585,8 @@ def create_app(runners: dict[Mode, BotRunner], journal: Journal, token: str,
             changes["budget"] = body.budget
         if body.approve_mode is not None:
             changes["approve_mode"] = body.approve_mode
+        if body.after_hours_buys is not None:
+            changes["after_hours_buys"] = body.after_hours_buys
         for key in ("always_watch", "never_buy"):
             value = getattr(body, key)
             if value is not None:

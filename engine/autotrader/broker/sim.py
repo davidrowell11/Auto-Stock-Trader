@@ -16,7 +16,9 @@ class SimBroker(Broker):
         assets: dict[str, Asset] | None = None,
         market_open: bool = True,
         slippage_bps: float = 0.0,
+        session: str | None = None,
     ) -> None:
+        self.session = session  # None: "regular" when market_open, else "closed"
         self.cash = cash
         self.bars = bars
         self.assets = assets or {}
@@ -48,6 +50,8 @@ class SimBroker(Broker):
         return self.assets.get(symbol, Asset(symbol, exchange="NASDAQ"))
 
     def submit_order(self, order: OrderRequest) -> str:
+        if order.extended_hours and order.limit_price is None:
+            raise ValueError("Orders outside regular hours need a limit price")
         price = self.price(order.symbol)
         if order.limit_price is not None:
             if order.side is Side.BUY and price > order.limit_price:
@@ -77,5 +81,15 @@ class SimBroker(Broker):
     def get_order(self, order_id: str) -> OrderUpdate:
         return OrderUpdate(done=True, filled_qty=self.fills.get(order_id))
 
+    def market_session(self) -> str:
+        if self.session is not None:
+            return self.session
+        return "regular" if self.market_open else "closed"
+
+    def latest_prices(self, symbols: Iterable[str]) -> dict[str, float]:
+        return {s: self.price(s) for s in symbols if s in self.bars}
+
     def is_market_open(self) -> bool:
+        if self.session is not None:
+            return self.session == "regular"
         return self.market_open

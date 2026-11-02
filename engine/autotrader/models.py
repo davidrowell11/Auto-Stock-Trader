@@ -60,8 +60,9 @@ class OrderRequest:
     symbol: str
     side: Side
     qty: float
-    limit_price: float | None = None  # always set for penny stocks
+    limit_price: float | None = None  # always set for penny stocks and outside regular hours
     reason: str = ""
+    extended_hours: bool = False  # placed before 9:30am or after 4pm New York time (limit only)
 
 
 @dataclass(frozen=True)

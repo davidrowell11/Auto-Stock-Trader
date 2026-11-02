@@ -95,8 +95,11 @@ class OrderTrackingTests(unittest.TestCase):
         sells = [o for o in self.broker.orders if o.side is Side.SELL]
         self.assertEqual(len(sells), 1)
         self.assertIsNotNone(self.journal.get_stop("test", "AAPL"))  # still the bot's to look after
-        self.eng.run_cycle()  # sell still working: don't sell again
-        self.assertEqual(len([o for o in self.broker.orders if o.side is Side.SELL]), 1)
+        first = self.broker.last_id()
+        self.eng.run_cycle()  # sell still unfilled: cancel it and place it again at today's price
+        self.assertIn(first, self.broker.cancelled)
+        working_sells = [o for o in self.broker.open.values() if o.side is Side.SELL]
+        self.assertEqual(len(working_sells), 1)  # never two sells working at once
         self.broker.fill(self.broker.last_id())
         self.eng.run_cycle()
         self.assertIsNone(self.journal.get_stop("test", "AAPL"))
