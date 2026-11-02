@@ -1,0 +1,9 @@
+[project]
+name = "autotrader"
+version = "0.1.0"
+description = "Auto Stock Trader engine"
+requires-python = ">=3.11"
+dependencies = ["alpaca-py==0.44.0"]
+
+[tool.setuptools.packages.find]
+include = ["autotrader*"]

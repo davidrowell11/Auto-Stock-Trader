@@ -1,0 +1,133 @@
+"""Trade journal: a SQLite file recording every trade, stop and pending approval.
+
+Test and Live share one file but every row is tagged with its mode, so the
+two never mix.
+"""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS trades (
+    id INTEGER PRIMARY KEY,
+    ts TEXT NOT NULL, mode TEXT NOT NULL, symbol TEXT NOT NULL, side TEXT NOT NULL,
+    qty REAL NOT NULL, price REAL NOT NULL, order_id TEXT, reasons TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS stops (
+    mode TEXT NOT NULL, symbol TEXT NOT NULL,
+    entry_price REAL NOT NULL, stop_price REAL NOT NULL, highest_close REAL NOT NULL,
+    opened_at TEXT NOT NULL,
+    PRIMARY KEY (mode, symbol)
+);
+CREATE TABLE IF NOT EXISTS approvals (
+    id INTEGER PRIMARY KEY,
+    ts TEXT NOT NULL, mode TEXT NOT NULL, symbol TEXT NOT NULL, side TEXT NOT NULL,
+    qty REAL NOT NULL, limit_price REAL, reasons TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending'
+);
+CREATE TABLE IF NOT EXISTS equity (
+    ts TEXT NOT NULL, mode TEXT NOT NULL, equity REAL NOT NULL
+);
+"""
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+@dataclass
+class StopState:
+    entry_price: float
+    stop_price: float
+    highest_close: float
+
+
+class Journal:
+    def __init__(self, path: str | Path = ":memory:") -> None:
+        if str(path) != ":memory:":
+            Path(path).parent.mkdir(parents=True, exist_ok=True)
+        self.db = sqlite3.connect(str(path))
+        self.db.executescript(SCHEMA)
+
+    # ----- trades -----
+    def record_trade(self, mode: str, symbol: str, side: str, qty: float, price: float,
+                     order_id: str | None, reasons: list[str]) -> None:
+        with self.db:
+            self.db.execute(
+                "INSERT INTO trades (ts, mode, symbol, side, qty, price, order_id, reasons)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (_now(), mode, symbol, side, qty, price, order_id, json.dumps(reasons)),
+            )
+
+    def trades(self, mode: str) -> list[dict]:
+        cur = self.db.execute(
+            "SELECT ts, symbol, side, qty, price, order_id, reasons FROM trades"
+            " WHERE mode = ? ORDER BY id", (mode,),
+        )
+        cols = [c[0] for c in cur.description]
+        rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+        for r in rows:
+            r["reasons"] = json.loads(r["reasons"])
+        return rows
+
+    # ----- trailing stops -----
+    def get_stop(self, mode: str, symbol: str) -> StopState | None:
+        row = self.db.execute(
+            "SELECT entry_price, stop_price, highest_close FROM stops WHERE mode = ? AND symbol = ?",
+            (mode, symbol),
+        ).fetchone()
+        return StopState(*row) if row else None
+
+    def save_stop(self, mode: str, symbol: str, state: StopState) -> None:
+        with self.db:
+            self.db.execute(
+                "INSERT INTO stops (mode, symbol, entry_price, stop_price, highest_close, opened_at)"
+                " VALUES (?, ?, ?, ?, ?, ?)"
+                " ON CONFLICT(mode, symbol) DO UPDATE SET"
+                " stop_price = excluded.stop_price, highest_close = excluded.highest_close",
+                (mode, symbol, state.entry_price, state.stop_price, state.highest_close, _now()),
+            )
+
+    def clear_stop(self, mode: str, symbol: str) -> None:
+        with self.db:
+            self.db.execute("DELETE FROM stops WHERE mode = ? AND symbol = ?", (mode, symbol))
+
+    # ----- approvals (Live approve mode) -----
+    def queue_approval(self, mode: str, symbol: str, side: str, qty: float,
+                       limit_price: float | None, reasons: list[str]) -> int:
+        with self.db:
+            cur = self.db.execute(
+                "INSERT INTO approvals (ts, mode, symbol, side, qty, limit_price, reasons)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (_now(), mode, symbol, side, qty, limit_price, json.dumps(reasons)),
+            )
+        return int(cur.lastrowid)
+
+    def pending_approvals(self, mode: str) -> list[dict]:
+        cur = self.db.execute(
+            "SELECT id, ts, symbol, side, qty, limit_price, reasons FROM approvals"
+            " WHERE mode = ? AND status = 'pending' ORDER BY id", (mode,),
+        )
+        cols = [c[0] for c in cur.description]
+        return [dict(zip(cols, r)) for r in cur.fetchall()]
+
+    def has_pending(self, mode: str, symbol: str) -> bool:
+        return self.db.execute(
+            "SELECT 1 FROM approvals WHERE mode = ? AND symbol = ? AND status = 'pending'",
+            (mode, symbol),
+        ).fetchone() is not None
+
+    # ----- equity history (for the drawdown brake) -----
+    def record_equity(self, mode: str, equity: float) -> None:
+        with self.db:
+            self.db.execute("INSERT INTO equity (ts, mode, equity) VALUES (?, ?, ?)",
+                            (_now(), mode, equity))
+
+    def peak_equity(self, mode: str) -> float:
+        row = self.db.execute("SELECT MAX(equity) FROM equity WHERE mode = ?", (mode,)).fetchone()
+        return float(row[0]) if row and row[0] is not None else 0.0
