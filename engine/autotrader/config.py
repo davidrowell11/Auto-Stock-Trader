@@ -45,6 +45,7 @@ class HardLimits:
     live_starter_days: int = 30  # how long the starter cap lasts after Live first starts
     live_auto_stop_drawdown: float = 0.10  # Live stops itself after losing this much of its money
     live_auto_stop_errors: int = 3  # ...or after this many failed cycles in a row
+    stop_out_cooloff_days: int = 7  # after a protective sell, don't rebuy that stock for a week
     # Things the bot may never do
     allow_otc: bool = False
     allow_options: bool = False
