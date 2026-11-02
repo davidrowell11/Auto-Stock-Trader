@@ -182,7 +182,10 @@ class BotRunner:
             return self.broker.market_session()
         except Exception as exc:
             log.warning("Couldn't get the market session: %s", exc)
-            return "regular" if self.broker.is_market_open() else "closed"
+            try:
+                return "regular" if self.broker.is_market_open() else "closed"
+            except Exception:
+                return "closed"
 
     def pause_buying(self, reason: str) -> None:
         """Automatic safety stop: no new buys until you press Start. Holdings stay protected."""
@@ -208,9 +211,11 @@ class BotRunner:
             if lost >= HARD_LIMITS.live_auto_stop_drawdown:
                 self.pause_buying(f"Live lost {lost:.0%} of its money from its peak")
 
-    def run_once(self, session: str = "regular") -> None:
+    def run_once(self, session: str | None = None) -> None:
         if self.broker is None:
             return
+        if session is None:
+            session = self.session()
         self.next_check = None
         with self.lock:
             self.busy = True

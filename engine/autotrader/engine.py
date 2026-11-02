@@ -350,7 +350,7 @@ class Engine:
         if self.extended and candidates:
             # Daily prices are from the last close; size and price after-hours buys on the latest trade.
             latest = self.broker.latest_prices(c.symbol for c in candidates)
-            candidates = [replace(c, price=latest[c.symbol]) for c in candidates if c.symbol in latest]
+            candidates = [replace(c, price=latest.get(c.symbol, c.price)) for c in candidates]
 
         reviews = 0
         for sig in candidates:
