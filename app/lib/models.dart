@@ -189,6 +189,72 @@ class ActivityEvent {
   );
 }
 
+/// What the bot is doing right now, for the "What the bot is doing" section.
+class LiveStatus {
+  LiveStatus({
+    required this.now,
+    required this.since,
+    this.nextCheck,
+    required this.working,
+    required this.steps,
+    this.lastCycle,
+  });
+
+  final String now;
+  final DateTime since;
+  final DateTime? nextCheck;
+  final bool working; // a check is running at this moment
+  final List<BotStep> steps; // newest first
+  final LastCycle? lastCycle;
+
+  factory LiveStatus.fromJson(Map<String, dynamic> j) => LiveStatus(
+    now: j['now'] as String,
+    since: DateTime.parse(j['since'] as String),
+    nextCheck: j['next_check'] == null
+        ? null
+        : DateTime.parse(j['next_check'] as String),
+    working: j['working'] as bool? ?? false,
+    steps: [
+      for (final x in (j['steps'] as List? ?? const []))
+        BotStep(DateTime.parse(x['ts'] as String), x['text'] as String),
+    ],
+    lastCycle: j['last_cycle'] == null
+        ? null
+        : LastCycle.fromJson(j['last_cycle'] as Map<String, dynamic>),
+  );
+}
+
+class BotStep {
+  BotStep(this.ts, this.text);
+  final DateTime ts;
+  final String text;
+}
+
+/// Results of the bot's most recent check.
+class LastCycle {
+  LastCycle({
+    required this.ts,
+    required this.summary,
+    required this.checked,
+    required this.skipped,
+    required this.skippedTotal,
+  });
+
+  final DateTime ts;
+  final String summary;
+  final int checked;
+  final List<String> skipped; // "SYMBOL: why it wasn't bought"
+  final int skippedTotal;
+
+  factory LastCycle.fromJson(Map<String, dynamic> j) => LastCycle(
+    ts: DateTime.parse(j['ts'] as String),
+    summary: j['summary'] as String,
+    checked: (j['checked'] as num?)?.toInt() ?? 0,
+    skipped: [for (final x in (j['skipped'] as List? ?? const [])) '$x'],
+    skippedTotal: (j['skipped_total'] as num?)?.toInt() ?? 0,
+  );
+}
+
 class AnalystView {
   AnalystView({
     required this.day,

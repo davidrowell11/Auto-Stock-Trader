@@ -19,6 +19,7 @@ import json
 import logging
 import os
 import threading
+from collections import deque
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -87,6 +88,10 @@ class SettingsStore:
         return load_settings(mode=mode, **overrides)
 
 
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
 class BotRunner:
     """One bot (Test or Live) running its cycle in a background thread."""
 
@@ -108,6 +113,14 @@ class BotRunner:
         self.mood: str | None = None
         self.mood_level: str | None = None
         self.failures = 0  # cycles failed in a row
+        # What the app's "What the bot is doing" section shows. Kept in memory only.
+        self.now_doing = "Stopped"
+        self.now_since = _now_iso()
+        self.next_check: str | None = None
+        self.steps: deque[dict] = deque(maxlen=60)
+        self.last_report: dict | None = None
+        self.busy = False  # True while a check is running
+        self._wake = threading.Event()  # set by Start so the bot begins at once
         try:
             self.broker: Broker | None = broker_factory(mode)
         except Exception as exc:  # e.g. Live keys not added yet
@@ -116,6 +129,19 @@ class BotRunner:
         self._stop = threading.Event()
         self.halted_by_you = threading.Event()  # set by Stop or the kill switch, cleared by Start
         self._thread: threading.Thread | None = None
+
+    def step(self, text: str, log_it: bool = True) -> None:
+        """Record what the bot is doing right now (and, if log_it, add it to the recent steps)."""
+        self.now_doing, self.now_since = text, _now_iso()
+        if log_it:
+            self.steps.append({"ts": self.now_since, "text": text})
+
+    def live_status(self) -> dict:
+        return {
+            "now": self.now_doing, "since": self.now_since, "next_check": self.next_check,
+            "working": self.busy,
+            "steps": list(reversed(self.steps)), "last_cycle": self.last_report,
+        }
 
     @property
     def settings(self) -> Settings:
@@ -129,6 +155,7 @@ class BotRunner:
         return Engine(self.broker, self.settings, self.journal,
                       keep_going=lambda: not self.halted_by_you.is_set(),
                       pause_buying=self.store.get(self.mode).get("buying_paused"),
+                      progress=self.step,
                       **self.engine_kwargs)
 
     def pause_buying(self, reason: str) -> None:
@@ -158,9 +185,22 @@ class BotRunner:
     def run_once(self) -> None:
         if self.broker is None:
             return
+        self.next_check = None
         with self.lock:
-            report = self.engine().run_cycle()
-            self.check_live_safety(self.broker.get_account().equity)
+            self.busy = True
+            try:
+                self.step("Starting a check")
+                report = self.engine().run_cycle()
+                self.check_live_safety(self.broker.get_account().equity)
+            finally:
+                self.busy = False
+        self.step(report.summary())
+        self.last_report = {
+            "ts": _now_iso(), "summary": report.summary(), "checked": report.checked,
+            "buys": report.buys, "sells": report.sells, "queued": report.queued,
+            "skipped": report.skipped[:40], "skipped_total": len(report.skipped),
+            "halted": report.halted, "mood": report.mood,
+        }
         self.halted = report.halted
         self.mood = report.mood
         self.mood_level = report.mood_level
@@ -168,18 +208,43 @@ class BotRunner:
 
     def loop(self) -> None:
         while not self._stop.is_set():
+            wait = self.settings.poll_seconds
             try:
-                if self.running and self.broker is not None and self.broker.is_market_open():
+                if not self.running:
+                    self.step("Stopped. Press Start bot to begin.", log_it=False)
+                    self.next_check = None
+                elif self.broker is None:
+                    self.step(f"Can't reach the broker: {self.error}", log_it=False)
+                elif not self.broker.is_market_open():
+                    self.step("Waiting for the market to open (9:30am to 4pm New York time, weekdays)",
+                              log_it=False)
+                    wait = min(wait, 60)  # notice the open (and Start) quickly
+                    self.next_check = None
+                else:
                     self.run_once()
                     self.error = None
                     self.failures = 0
+                    self.next_check = (datetime.now(timezone.utc)
+                                       + timedelta(seconds=wait)).isoformat(timespec="seconds")
+                    self.step(f"Resting until the next check. {self.last_report['summary']}.",
+                              log_it=False)
             except Exception as exc:  # keep the thread alive; show the problem in the app
                 log.exception("%s cycle failed", self.mode.value)
                 self.error = str(exc)
+                self.step(f"A check failed: {exc}. It will try again.")
                 self.failures += 1
                 if self.mode is Mode.LIVE and self.failures >= HARD_LIMITS.live_auto_stop_errors:
                     self.pause_buying(f"{self.failures} cycles failed in a row ({exc})")
-            self._stop.wait(self.settings.poll_seconds)
+            self._pause(wait)
+
+    def _pause(self, seconds: float) -> None:
+        """Wait between checks; Start (or shutting down) cuts the wait short."""
+        self._wake.wait(seconds)
+        self._wake.clear()
+
+    def stop_thread(self) -> None:
+        self._stop.set()
+        self._wake.set()
 
     def start_thread(self) -> None:
         self._thread = threading.Thread(target=self.loop, name=f"bot-{self.mode.value}", daemon=True)
@@ -263,6 +328,7 @@ class BotRunner:
         """
         self.halted_by_you.set()  # a running cycle places no more orders
         self.store.update(self.mode, {"running": False})
+        self.step("Stopped by the kill switch")
         cancelled = self.journal.cancel_pending(self.mode.value)
         sold, failed = [], []
         if sell_all and self.broker is not None:
@@ -411,6 +477,11 @@ def create_app(runners: dict[Mode, BotRunner], journal: Journal, token: str,
             })
         return sorted(out, key=lambda x: -x["value"])
 
+    @app.get("/api/{mode}/live", **secured)
+    def live_status(mode: str):
+        """What the bot is doing right now, its recent steps and its last check's results."""
+        return runner(mode).live_status()
+
     @app.get("/api/{mode}/trades", **secured)
     def trades(mode: str):
         return list(reversed(journal.trades(runner(mode).mode.value)))
@@ -517,6 +588,8 @@ def create_app(runners: dict[Mode, BotRunner], journal: Journal, token: str,
         r.failures = 0
         r.store.update(r.mode, {"running": True, "buying_paused": None, "safety_peak": None})
         journal.add_event(r.mode.value, "start", "Bot started")
+        r.step("Starting up", log_it=False)
+        r._wake.set()  # don't wait for the current pause to finish
         return {"running": True}
 
     @app.post("/api/{mode}/stop", **secured)
@@ -525,6 +598,7 @@ def create_app(runners: dict[Mode, BotRunner], journal: Journal, token: str,
         r.halted_by_you.set()
         r.store.update(r.mode, {"running": False})
         journal.add_event(r.mode.value, "stop", "Bot stopped")
+        r.step("Stopped. Press Start bot to begin.", log_it=False)
         return {"running": False}
 
     @app.post("/api/{mode}/kill", **secured)

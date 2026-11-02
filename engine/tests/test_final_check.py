@@ -267,6 +267,22 @@ class ServerTests(unittest.TestCase):
         r.lock.release()
         self.assertTrue(done.wait(5))
 
+    def test_live_status_shows_what_the_bot_is_doing(self):
+        r = self.runners[Mode.TEST]
+        self.brokers[Mode.TEST] = SimBroker(100_000, {"AAPL": make_bars(uptrend())})
+        r.broker = self.brokers[Mode.TEST]
+        self.c.post("/api/test/start", headers=AUTH)
+        r.run_once()
+        live = self.c.get("/api/test/live", headers=AUTH).json()
+        texts = [s["text"] for s in live["steps"]]
+        self.assertTrue(any(t.startswith("Looking for buys") for t in texts))
+        self.assertTrue(any(t.startswith("Buying") and "AAPL" in t for t in texts))
+        self.assertIn("bought AAPL", live["last_cycle"]["summary"])
+        self.assertEqual(live["steps"][0]["text"], live["last_cycle"]["summary"])  # newest first
+        self.assertFalse(live["working"])
+        self.c.post("/api/test/stop", headers=AUTH)
+        self.assertTrue(self.c.get("/api/test/live", headers=AUTH).json()["now"].startswith("Stopped"))
+
     def test_reject_only_pending(self):
         aid = self.journal.queue_approval("live", "AAPL", "buy", 1, None, ["x"])
         self.journal.set_approval_status(aid, "expired")

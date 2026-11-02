@@ -326,6 +326,52 @@ class DemoApi implements TraderApi {
   );
 
   @override
+  Future<LiveStatus> live(String mode) async {
+    final now = DateTime.now();
+    if (_running[mode] != true) {
+      return LiveStatus(
+        now: 'Stopped. Press Start bot to begin.',
+        since: now,
+        working: false,
+        steps: [],
+      );
+    }
+    final texts = [
+      'Checked 52 stocks: bought MSFT',
+      'Buying 4 MSFT at about \$412.30',
+      'Asking the AI analyst about MSFT',
+      'Checking what Congress members and company insiders are buying',
+      '3 passed the trend and safety checks: MSFT, AVGO, COST',
+      'Looking for buys among 52 stocks',
+      'Checking NVDA: price \$121.40, safety stop \$109.80',
+      'Watching 3 stocks it owns',
+      'Getting prices for 56 stocks',
+      'Starting a check',
+    ];
+    return LiveStatus(
+      now: 'Resting until the next check. Checked 52 stocks: bought MSFT.',
+      since: now.subtract(const Duration(minutes: 1)),
+      nextCheck: now.add(const Duration(minutes: 4)),
+      working: false,
+      steps: [
+        for (var i = 0; i < texts.length; i++)
+          BotStep(now.subtract(Duration(seconds: 60 + i * 6)), texts[i]),
+      ],
+      lastCycle: LastCycle(
+        ts: now.subtract(const Duration(minutes: 1)),
+        summary: 'Checked 52 stocks: bought MSFT',
+        checked: 52,
+        skipped: [
+          'AVGO: analyst confidence 55% is below the 60% needed',
+          'COST: reports earnings in 3 days',
+          'TSLA: the uptrend isn\'t steady enough',
+        ],
+        skippedTotal: 3,
+      ),
+    );
+  }
+
+  @override
   Future<WeeklyReport> weekly(String mode) async => WeeklyReport(
     since: '2026-10-26',
     changePct: mode == 'test' ? 0.021 : 0.008,
