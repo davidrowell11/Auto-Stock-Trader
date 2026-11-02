@@ -9,7 +9,7 @@ from autotrader.broker.sim import SimBroker
 from autotrader.config import Mode, Settings, load_settings
 from autotrader.engine import Engine
 from autotrader.journal import Journal
-from autotrader.models import Asset
+from autotrader.models import Asset, OrderUpdate
 
 from helpers import make_bars, uptrend
 
@@ -46,6 +46,9 @@ class PendingOrderBroker(SimBroker):
 
     def open_order_symbols(self):
         return set(self.pending)
+
+    def get_order(self, order_id):
+        return OrderUpdate(done=False, filled_qty=0.0)
 
 
 class EngineFixTests(unittest.TestCase):

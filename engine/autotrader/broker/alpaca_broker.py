@@ -15,7 +15,7 @@ from collections.abc import Iterable
 from datetime import datetime, timedelta, timezone
 
 from ..config import Mode
-from ..models import Account, Asset, Bar, OrderRequest, Position, Side
+from ..models import Account, Asset, Bar, OrderRequest, OrderUpdate, Position, Side
 from .base import Broker
 
 
@@ -112,8 +112,16 @@ class AlpacaBroker(Broker):
         orders = self.trading.get_orders(GetOrdersRequest(status=QueryOrderStatus.OPEN, limit=500))
         return {o.symbol for o in orders}
 
-    def cancel_open_orders(self) -> None:
-        self.trading.cancel_orders()
+    # Finished for good. "done_for_day" isn't here: a day order in that state still expires later.
+    FINISHED = {"filled", "canceled", "expired", "rejected", "replaced"}
+
+    def get_order(self, order_id: str) -> OrderUpdate:
+        o = self.trading.get_order_by_id(order_id)
+        status = getattr(o.status, "value", str(o.status))
+        return OrderUpdate(done=status in self.FINISHED, filled_qty=float(o.filled_qty or 0))
+
+    def cancel_order(self, order_id: str) -> None:
+        self.trading.cancel_order_by_id(order_id)
 
     def is_market_open(self) -> bool:
         return bool(self.trading.get_clock().is_open)

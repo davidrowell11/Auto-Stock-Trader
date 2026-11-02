@@ -3,7 +3,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Iterable
 
-from ..models import Account, Asset, Bar, OrderRequest, Position
+from ..models import Account, Asset, Bar, OrderRequest, OrderUpdate, Position
 
 
 class Broker(ABC):
@@ -29,8 +29,12 @@ class Broker(ABC):
     def is_market_open(self) -> bool: ...
 
     def open_order_symbols(self) -> set[str]:
-        """Symbols with an order that hasn't filled yet."""
+        """Symbols with any order (yours or the bot's) that hasn't filled yet."""
         return set()
 
-    def cancel_open_orders(self) -> None:
-        """Cancel every unfilled order (used by the kill switch)."""
+    def get_order(self, order_id: str) -> OrderUpdate:
+        """Whether one order is finished, and how much of it filled."""
+        return OrderUpdate(done=True)
+
+    def cancel_order(self, order_id: str) -> None:
+        """Cancel one of the bot's unfilled orders. Your own orders are never cancelled."""

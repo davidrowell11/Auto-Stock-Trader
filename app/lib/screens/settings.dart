@@ -92,7 +92,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   title: const Text('Live budget cap'),
                   subtitle: Text(
                     live!.budget == null
-                        ? 'No cap: the bot may use the whole account'
+                        ? 'Starter cap of \$1,000'
                         : 'At most ${moneyRound.format(live!.budget)} of real money',
                   ),
                   trailing: const Icon(Icons.edit_rounded),
@@ -233,7 +233,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           keyboardType: TextInputType.number,
           decoration: const InputDecoration(
             prefixText: '\$ ',
-            hintText: 'Leave empty for no cap',
+            hintText: 'For example 1000',
           ),
         ),
         actions: [
@@ -250,16 +250,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
     if (result == null) return;
     final text = result.trim();
-    if (text.isEmpty) {
-      await save('live', {'clear_budget': true});
-      return;
-    }
-    final v = parseMoney(text);
+    final v = text.isEmpty ? null : parseMoney(text);
     if (v == null) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('"$text" isn\'t an amount. The cap was not changed.'),
+            content: Text(
+              text.isEmpty
+                  ? 'Live always needs a cap. The cap was not changed.'
+                  : '"$text" isn\'t an amount. The cap was not changed.',
+            ),
           ),
         );
       }
