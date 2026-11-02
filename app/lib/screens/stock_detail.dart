@@ -214,11 +214,16 @@ class _StockDetailState extends State<StockDetail> {
     final lo = bars.map((b) => b.l).reduce(min),
         hi = bars.map((b) => b.h).reduce(max);
     final pad = (hi - lo) * 0.08;
+    DateTime day(DateTime t) {
+      // Calendar day in UTC. Trades happen in US market hours, when the UTC
+      // date and the New York date are the same, whatever the phone's time zone.
+      final u = t.toUtc();
+      return DateTime.utc(u.year, u.month, u.day);
+    }
+
     double xOf(DateTime d) {
       // Index of the first bar on or after the trade day.
-      final i = bars.indexWhere(
-        (b) => !b.t.isBefore(DateTime(d.year, d.month, d.day)),
-      );
+      final i = bars.indexWhere((b) => !day(b.t).isBefore(day(d)));
       return (i < 0 ? bars.length - 1 : i).toDouble();
     }
 

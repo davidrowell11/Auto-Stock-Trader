@@ -6,9 +6,10 @@ Every request (except /health) needs ``Authorization: Bearer <token>``, where
 the token is the ``AUTOTRADER_APP_TOKEN`` secret. You type the same token
 into the app once, when you connect it.
 
-Each bot has its own lock, so a trading cycle and an approval never run at the
-same time. The kill switch doesn't wait for the lock: it stops the bot at once
-(the cycle checks before every order) and sells straight away.
+Each bot has its own lock, so a trading cycle, an approval and the kill switch
+never run at the same time. The kill switch stops the bot at once (the cycle
+checks before every order), then waits briefly for the cycle to finish before
+selling, so the same stock is never sold twice.
 """
 
 from __future__ import annotations
@@ -29,7 +30,7 @@ from pydantic import BaseModel, Field
 from . import penny, strategy
 from .broker.base import Broker
 from .config import HARD_LIMITS, Mode, Settings, load_settings
-from .engine import Engine
+from .engine import APPROVAL_MAX_AGE, Engine, bot_positions
 from .readiness import live_checks, test_results
 from .journal import Journal, StopState
 from .models import OrderRequest, Side
@@ -74,18 +75,23 @@ class SettingsStore:
         saved = self.get(mode)
         overrides = {k: (tuple(v) if isinstance(v, list) else v)
                      for k, v in saved.items() if k in EDITABLE}
-        if mode is Mode.LIVE and self.starter_active():
+        if mode is Mode.LIVE:
             # Start small: never more than the starter cap of real money, whatever the file says.
+            # Live never falls back to the whole account: without a saved cap it stays at the starter cap.
             cap = HARD_LIMITS.live_starter_cap
             budget = overrides.get("budget")
-            overrides["budget"] = cap if budget is None else min(budget, cap)
+            if budget is None:
+                overrides["budget"] = cap
+            elif self.starter_active():
+                overrides["budget"] = min(budget, cap)
         return load_settings(mode=mode, **overrides)
 
 
 class BotRunner:
     """One bot (Test or Live) running its cycle in a background thread."""
 
-    APPROVAL_MAX_AGE = timedelta(hours=24)
+    APPROVAL_MAX_AGE = APPROVAL_MAX_AGE
+    KILL_WAIT_SECONDS = 60
 
     def __init__(self, mode: Mode, store: SettingsStore, journal: Journal, lock: threading.RLock,
                  broker_factory: Callable[[Mode], Broker], engine_kwargs: dict | None = None,
@@ -207,15 +213,15 @@ class BotRunner:
             self.journal.set_approval_status(approval_id, "expired")
             raise HTTPException(409, "This suggestion is over a day old, so it expired")
         engine = self.engine()
+        positions, _ = engine.sync_holdings()
+        if a["symbol"] in self.journal.owned_symbols(self.mode.value):
+            self.journal.set_approval_status(approval_id, "expired")
+            raise HTTPException(409, f"The bot already owns {a['symbol']}")
         sig, problems = engine.recheck_buy(a["symbol"])
         if sig is None or problems:
             self.journal.set_approval_status(approval_id, "expired")
             raise HTTPException(409, f"Can't buy now: {'; '.join(problems)}")
-        owned = self.journal.owned_symbols(self.mode.value)
         account = self.broker.get_account()
-        positions = [p for p in self.broker.get_positions() if p.symbol in owned]
-        for p in positions:
-            p.sector = sector_of(p.symbol)
         price = sig.price
         s = engine.s
         is_penny = penny.is_penny(price, s)
@@ -235,7 +241,7 @@ class BotRunner:
         self.journal.record_trade(self.mode.value, a["symbol"], "buy", qty, price, order_id,
                                   [*a["reasons"], "Approved by you in the app"])
         stop = strategy.initial_stop(price, sig.atr, strategy.stop_multiple(price, s))
-        self.journal.save_stop(self.mode.value, a["symbol"], StopState(price, stop, price))
+        engine.order_placed(a["symbol"], StopState(price, stop, price, qty=qty), "buy", order_id)
         self.journal.set_approval_status(approval_id, "approved")
         self.journal.add_event(self.mode.value, "buy", f"Bought {qty:g} {a['symbol']} at about ${price:.2f} (you approved)")
         return {"bought": qty, "price": price, "stop": round(stop, 2)}
@@ -245,45 +251,68 @@ class BotRunner:
             a = self.journal.get_approval(approval_id)
             if a is None or a["mode"] != self.mode.value:
                 raise HTTPException(404, "No such approval")
+            if a["status"] != "pending":
+                raise HTTPException(409, f"Already {a['status']}")
             self.journal.set_approval_status(approval_id, "rejected")
 
     def kill(self, sell_all: bool) -> dict:
         """Kill switch: stop the bot now, and optionally sell everything it bought.
 
-        It doesn't wait for a running cycle: the cycle checks halted_by_you
-        before every order and stops. Your own holdings are never touched.
+        Only the bot's own shares and orders are touched; your own holdings and
+        orders never are.
         """
-        self.halted_by_you.set()
+        self.halted_by_you.set()  # a running cycle places no more orders
         self.store.update(self.mode, {"running": False})
         cancelled = self.journal.cancel_pending(self.mode.value)
         sold, failed = [], []
         if sell_all and self.broker is not None:
+            # Wait for a running cycle to finish so a stock it's selling isn't sold twice.
+            # (It stops at its next order, so this is short; after the wait, sell anyway.)
+            got_lock = self.lock.acquire(timeout=self.KILL_WAIT_SECONDS)
             try:
-                self.broker.cancel_open_orders()  # frees shares held by unfilled orders
-            except Exception as exc:
-                log.error("Kill switch couldn't cancel open orders: %s", exc)
-            owned = self.journal.owned_symbols(self.mode.value)
-            for p in self.broker.get_positions():
-                if p.symbol not in owned:
-                    continue
-                limit = None
-                if p.current_price < self.settings.penny_price:
-                    limit = round(p.current_price * 0.98, 4 if p.current_price < 1 else 2)
-                try:
-                    self.broker.submit_order(OrderRequest(p.symbol, Side.SELL, p.qty, limit, "Kill switch"))
-                except Exception as exc:
-                    log.error("Kill switch sell %s failed: %s", p.symbol, exc)
-                    failed.append(p.symbol)
-                    continue
-                self.journal.record_trade(self.mode.value, p.symbol, "sell", p.qty, p.current_price,
-                                          None, ["Kill switch"])
-                self.journal.clear_stop(self.mode.value, p.symbol)
-                sold.append(p.symbol)
+                sold, failed = self._sell_everything()
+            finally:
+                if got_lock:
+                    self.lock.release()
         self.journal.add_event(self.mode.value, "kill",
                                "Kill switch: bot stopped" + (f", sold {', '.join(sold)}" if sold else ""))
         if failed:
             self.journal.add_event(self.mode.value, "kill", f"Kill switch couldn't sell {', '.join(failed)}")
         return {"stopped": True, "sold": sold, "failed": failed, "cancelled_approvals": cancelled}
+
+    def _sell_everything(self) -> tuple[list[str], list[str]]:
+        engine = Engine(self.broker, self.settings, self.journal)
+        mode = self.mode.value
+        for symbol in self.journal.owned_symbols(mode):  # unfilled buys first
+            state = self.journal.get_stop(mode, symbol)
+            if state and state.order_id and state.order_side == "buy":
+                try:
+                    self.broker.cancel_order(state.order_id)
+                except Exception as exc:
+                    log.error("Kill switch couldn't cancel the %s buy: %s", symbol, exc)
+        positions, working = engine.sync_holdings()
+        sold, failed = [], []
+        for p in positions:
+            state = self.journal.get_stop(mode, p.symbol)
+            if p.symbol in working:
+                if state.order_side == "sell":
+                    sold.append(p.symbol)  # already being sold
+                else:
+                    failed.append(p.symbol)  # buy still being cancelled; press again in a moment
+                continue
+            limit = None
+            if penny.is_penny(p.current_price, engine.s):
+                limit = round(p.current_price * 0.98, 4 if p.current_price < 1 else 2)
+            try:
+                order_id = self.broker.submit_order(OrderRequest(p.symbol, Side.SELL, p.qty, limit, "Kill switch"))
+            except Exception as exc:
+                log.error("Kill switch sell %s failed: %s", p.symbol, exc)
+                failed.append(p.symbol)
+                continue
+            self.journal.record_trade(mode, p.symbol, "sell", p.qty, p.current_price, order_id, ["Kill switch"])
+            engine.order_placed(p.symbol, state, "sell", order_id)
+            sold.append(p.symbol)
+        return sold, failed
 
 
 # ----- request bodies -----
@@ -352,8 +381,7 @@ def create_app(runners: dict[Mode, BotRunner], journal: Journal, token: str,
         }
         if r.broker is not None:
             acct = r.broker.get_account()
-            owned = journal.owned_symbols(r.mode.value)
-            positions = [p for p in r.broker.get_positions() if p.symbol in owned]
+            positions = bot_positions(r.broker, journal, r.mode.value)
             market_open = r.broker.is_market_open()
             out.update({
                 "equity": acct.equity, "cash": acct.cash,
@@ -367,8 +395,7 @@ def create_app(runners: dict[Mode, BotRunner], journal: Journal, token: str,
     @app.get("/api/{mode}/positions", **secured)
     def positions(mode: str):
         r = runner(mode)
-        owned = journal.owned_symbols(r.mode.value)
-        held = [p for p in broker_of(r).get_positions() if p.symbol in owned]
+        held = bot_positions(broker_of(r), journal, r.mode.value)
         buys = {t["symbol"]: t for t in journal.trades(r.mode.value) if t["side"] == "buy"}
         out = []
         for p in held:
@@ -426,9 +453,11 @@ def create_app(runners: dict[Mode, BotRunner], journal: Journal, token: str,
     def put_settings(mode: str, body: SettingsUpdate):
         r = runner(mode)
         changes = {}
+        if r.mode is Mode.LIVE and body.clear_budget:
+            raise HTTPException(400, "Live always needs a budget cap. Set an amount instead.")
         if r.mode is Mode.LIVE and r.store.starter_active():
             cap = HARD_LIMITS.live_starter_cap
-            if body.clear_budget or (body.budget is not None and body.budget > cap):
+            if body.budget is not None and body.budget > cap:
                 raise HTTPException(400, f"For the first {HARD_LIMITS.live_starter_days} days of Live, "
                                          f"the cap can't be over ${cap:,.0f}")
         if body.clear_budget:

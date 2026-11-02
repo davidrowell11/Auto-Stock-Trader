@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from ..models import Account, Asset, Bar, OrderRequest, Position, Side
+from ..models import Account, Asset, Bar, OrderRequest, OrderUpdate, Position, Side
 from .base import Broker
 
 
@@ -26,6 +26,7 @@ class SimBroker(Broker):
         self.last_equity = cash
         self.slippage = slippage_bps / 10_000  # trading cost charged on every fill
         self.realized: list[float] = []  # profit or loss of each closed sale
+        self.fills: dict[str, float] = {}  # order id -> quantity filled (sim orders fill at once)
 
     def price(self, symbol: str) -> float:
         return self.bars[symbol][-1].close
@@ -69,7 +70,12 @@ class SimBroker(Broker):
                 self.holdings.pop(order.symbol, None)
             else:
                 self.holdings[order.symbol] = (qty - sell, avg)
-        return f"sim-{len(self.orders)}"
+        order_id = f"sim-{len(self.orders)}"
+        self.fills[order_id] = order.qty if order.side is Side.BUY else sell
+        return order_id
+
+    def get_order(self, order_id: str) -> OrderUpdate:
+        return OrderUpdate(done=True, filled_qty=self.fills.get(order_id))
 
     def is_market_open(self) -> bool:
         return self.market_open

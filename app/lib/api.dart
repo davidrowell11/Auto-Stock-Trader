@@ -71,7 +71,17 @@ class HttpApi implements TraderApi {
         "Can't reach the bot server. Check the address and that it's running.",
       );
     }
-    final decoded = res.body.isEmpty ? null : jsonDecode(res.body);
+    Object? decoded;
+    try {
+      decoded = res.body.isEmpty ? null : jsonDecode(res.body);
+    } on FormatException {
+      // Not the bot's JSON (e.g. a hosting error page): report it plainly.
+      throw ApiException(
+        res.statusCode >= 400
+            ? 'Server error ${res.statusCode}'
+            : "That address answered, but it isn't the bot server.",
+      );
+    }
     if (res.statusCode >= 400) {
       final detail = decoded is Map ? decoded['detail'] : null;
       throw ApiException(

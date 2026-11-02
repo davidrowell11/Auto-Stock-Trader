@@ -6,10 +6,12 @@ two never mix.
 
 from __future__ import annotations
 
+import functools
 import json
 import sqlite3
+import threading
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 SCHEMA = """
@@ -50,19 +52,42 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+# Added after the first release; older journals get them on startup.
+STOP_COLUMNS = {"qty": "REAL", "order_id": "TEXT", "order_side": "TEXT"}
+
+
 @dataclass
 class StopState:
     entry_price: float
     stop_price: float
     highest_close: float
+    qty: float | None = None  # shares the bot itself owns (None: from before this was tracked)
+    order_id: str | None = None  # the bot's order for this stock that hasn't finished yet
+    order_side: str | None = None  # "buy" or "sell"
+
+
+def _locked(method):
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+    return wrapper
 
 
 class Journal:
     def __init__(self, path: str | Path = ":memory:") -> None:
         if str(path) != ":memory:":
             Path(path).parent.mkdir(parents=True, exist_ok=True)
-        self.db = sqlite3.connect(str(path), check_same_thread=False)  # server serializes access
+        # The Test bot, the Live bot and the app's requests all share this connection,
+        # so every method takes the lock.
+        self._lock = threading.RLock()
+        self.db = sqlite3.connect(str(path), check_same_thread=False)
         self.db.executescript(SCHEMA)
+        have = {r[1] for r in self.db.execute("PRAGMA table_info(stops)")}
+        for name, kind in STOP_COLUMNS.items():
+            if name not in have:
+                self.db.execute(f"ALTER TABLE stops ADD COLUMN {name} {kind}")
+        self.db.commit()
 
     # ----- trades -----
     def record_trade(self, mode: str, symbol: str, side: str, qty: float, price: float,
@@ -88,7 +113,8 @@ class Journal:
     # ----- trailing stops -----
     def get_stop(self, mode: str, symbol: str) -> StopState | None:
         row = self.db.execute(
-            "SELECT entry_price, stop_price, highest_close FROM stops WHERE mode = ? AND symbol = ?",
+            "SELECT entry_price, stop_price, highest_close, qty, order_id, order_side FROM stops"
+            " WHERE mode = ? AND symbol = ?",
             (mode, symbol),
         ).fetchone()
         return StopState(*row) if row else None
@@ -96,11 +122,13 @@ class Journal:
     def save_stop(self, mode: str, symbol: str, state: StopState) -> None:
         with self.db:
             self.db.execute(
-                "INSERT INTO stops (mode, symbol, entry_price, stop_price, highest_close, opened_at)"
-                " VALUES (?, ?, ?, ?, ?, ?)"
+                "INSERT INTO stops (mode, symbol, entry_price, stop_price, highest_close, opened_at,"
+                " qty, order_id, order_side) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
                 " ON CONFLICT(mode, symbol) DO UPDATE SET"
-                " stop_price = excluded.stop_price, highest_close = excluded.highest_close",
-                (mode, symbol, state.entry_price, state.stop_price, state.highest_close, _now()),
+                " stop_price = excluded.stop_price, highest_close = excluded.highest_close,"
+                " qty = excluded.qty, order_id = excluded.order_id, order_side = excluded.order_side",
+                (mode, symbol, state.entry_price, state.stop_price, state.highest_close, _now(),
+                 state.qty, state.order_id, state.order_side),
             )
 
     def owned_symbols(self, mode: str) -> set[str]:
@@ -152,6 +180,15 @@ class Journal:
         out = dict(zip([c[0] for c in cur.description], row))
         out["reasons"] = json.loads(out["reasons"])
         return out
+
+    def expire_approvals(self, mode: str, max_age: timedelta) -> int:
+        """Mark suggestions older than max_age as expired, so they stop showing in the app."""
+        cutoff = (datetime.now(timezone.utc) - max_age).isoformat(timespec="seconds")
+        with self.db:
+            cur = self.db.execute(
+                "UPDATE approvals SET status = 'expired'"
+                " WHERE mode = ? AND status = 'pending' AND ts < ?", (mode, cutoff))
+        return cur.rowcount
 
     def set_approval_status(self, approval_id: int, status: str) -> None:
         with self.db:
@@ -232,3 +269,8 @@ class Journal:
     def peak_equity(self, mode: str) -> float:
         row = self.db.execute("SELECT MAX(equity) FROM equity WHERE mode = ?", (mode,)).fetchone()
         return float(row[0]) if row and row[0] is not None else 0.0
+
+
+for _name, _fn in list(vars(Journal).items()):
+    if callable(_fn) and not _name.startswith("_"):
+        setattr(Journal, _name, _locked(_fn))

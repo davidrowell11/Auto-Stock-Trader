@@ -64,6 +64,14 @@ class OrderRequest:
     reason: str = ""
 
 
+@dataclass(frozen=True)
+class OrderUpdate:
+    """Where an order stands. filled_qty None means the broker doesn't say (treat as all filled)."""
+
+    done: bool
+    filled_qty: float | None = None
+
+
 @dataclass
 class Signal:
     """A buy idea produced by the strategy, before risk checks."""

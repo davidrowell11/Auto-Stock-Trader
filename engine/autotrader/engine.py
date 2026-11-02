@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import timedelta
 
 from . import penny, strategy
 from . import indicators as ind
@@ -25,6 +26,27 @@ from .universe import build_universe, sector_of
 log = logging.getLogger("autotrader")
 
 HISTORY_DAYS = strategy.MIN_HISTORY + 10
+APPROVAL_MAX_AGE = timedelta(hours=24)
+DUST = 1e-6  # share counts below this are treated as zero
+
+
+def bot_positions(broker: Broker, journal: Journal, mode: str) -> list[Position]:
+    """The bot's own holdings, counting only the shares it bought.
+
+    Stocks it didn't buy, and any extra shares of the same stock you bought
+    yourself, are left out, so the bot never sells or counts them.
+    """
+    out = []
+    for p in broker.get_positions():
+        state = journal.get_stop(mode, p.symbol)
+        if state is None:
+            continue
+        if state.qty is not None:
+            p.qty = min(p.qty, state.qty)
+        if p.qty > DUST:
+            p.sector = sector_of(p.symbol)
+            out.append(p)
+    return out
 
 
 @dataclass
@@ -56,6 +78,7 @@ class Engine:
         # Checked before every order, so Stop or the kill switch takes effect mid-cycle.
         self.keep_going = keep_going
         self.open_orders: set[str] = set()
+        self.working: set[str] = set()  # stocks with one of the bot's own orders still working
         self.assets: dict[str, object] = {}
         self.earnings = earnings  # e.g. EarningsCalendar.reports_soon
         self.mood = Mood("calm", 1.0, True, "")
@@ -66,17 +89,68 @@ class Engine:
     def needs_approval(self) -> bool:
         return self.s.mode is Mode.LIVE and self.s.approve_mode
 
+    # ----- the bot's own orders -----
+    def settle(self, symbol: str, held_qty: float | None) -> StopState | None:
+        """Bring one stock's record up to date with its last order. None means the bot no longer owns it."""
+        state = self.journal.get_stop(self.mode, symbol)
+        if state is None:
+            return None
+        if state.order_id:
+            try:
+                update = self.broker.get_order(state.order_id)
+            except Exception as exc:  # can't tell yet; leave it alone this cycle
+                log.warning("Couldn't check order %s for %s: %s", state.order_id, symbol, exc)
+                return state
+            if not update.done:
+                return state
+            if state.order_side == "buy":
+                state.qty = update.filled_qty if update.filled_qty is not None else state.qty
+            else:
+                sold = update.filled_qty if update.filled_qty is not None else (state.qty or 0.0)
+                state.qty = max(0.0, (state.qty if state.qty is not None else (held_qty or 0.0)) - sold)
+            state.order_id = state.order_side = None
+            if state.qty is not None and state.qty <= DUST:
+                self.journal.clear_stop(self.mode, symbol)
+                return None
+            self.journal.save_stop(self.mode, symbol, state)
+            return state
+        if held_qty is None or held_qty <= DUST:
+            # Nothing working and nothing held: sold outside the bot, or a buy that never filled.
+            self.journal.clear_stop(self.mode, symbol)
+            return None
+        if state.qty is None:  # journal from before the bot tracked its own share count
+            state.qty = held_qty
+            self.journal.save_stop(self.mode, symbol, state)
+        return state
+
+    def sync_holdings(self) -> tuple[list[Position], set[str]]:
+        """The bot's holdings after settling its orders, and the stocks it still has an order working for."""
+        held = {p.symbol: p.qty for p in self.broker.get_positions()}
+        working = set()
+        for symbol in sorted(self.journal.owned_symbols(self.mode)):
+            state = self.settle(symbol, held.get(symbol))
+            if state is not None and state.order_id:
+                working.add(symbol)
+        return bot_positions(self.broker, self.journal, self.mode), working
+
+    def order_placed(self, symbol: str, state: StopState, side: str, order_id: str) -> None:
+        state.order_id, state.order_side = order_id, side
+        self.journal.save_stop(self.mode, symbol, state)
+        held = {p.symbol: p.qty for p in self.broker.get_positions()}
+        self.settle(symbol, held.get(symbol))  # most orders fill at once
+
     def run_cycle(self) -> CycleReport:
         report = CycleReport()
+        expired = self.journal.expire_approvals(self.mode, APPROVAL_MAX_AGE)
+        if expired:
+            self.journal.add_event(self.mode, "approval",
+                                   f"{expired} suggested buy{'s' if expired > 1 else ''} expired after a day")
         account = self.broker.get_account()
         self.journal.record_equity(self.mode, account.equity)
-        # The bot only manages stocks it bought itself; anything else in the account is yours.
-        owned = self.journal.owned_symbols(self.mode)
-        positions = [p for p in self.broker.get_positions() if p.symbol in owned]
-        # Unfilled orders (e.g. penny limit orders) must not be placed again.
+        # Anyone's unfilled orders: the bot won't open a new trade in those stocks.
         self.open_orders = self.broker.open_order_symbols()
-        for p in positions:
-            p.sector = sector_of(p.symbol)
+        # The bot only manages stocks it bought itself; anything else in the account is yours.
+        positions, self.working = self.sync_holdings()
 
         universe = build_universe(self.s.always_watch, self.s.never_buy)
         symbols = sorted(set(universe) | {p.symbol for p in positions} | {MARKET})
@@ -102,7 +176,7 @@ class Engine:
                            report: CycleReport) -> list[Position]:
         kept: list[Position] = []
         for p in positions:
-            if p.symbol in self.open_orders:  # an order for it is still working
+            if p.symbol in self.working:  # the bot's own order for it is still working
                 kept.append(p)
                 continue
             history = bars.get(p.symbol, [])
@@ -146,7 +220,9 @@ class Engine:
             return False
         self.journal.record_trade(self.mode, p.symbol, "sell", p.qty, p.current_price,
                                   order_id, [reason])
-        self.journal.clear_stop(self.mode, p.symbol)
+        state = self.journal.get_stop(self.mode, p.symbol)
+        state.qty = p.qty if state.qty is None else state.qty
+        self.order_placed(p.symbol, state, "sell", order_id)
         report.sells.append(f"{p.symbol}: {reason}")
         self.journal.add_event(self.mode, "sell", f"Sold {p.qty:g} {p.symbol}: {reason}")
         log.info("SELL %s x%s: %s", p.symbol, p.qty, reason)
@@ -155,7 +231,7 @@ class Engine:
     # ----- finding new buys -----
     def _scan_for_buys(self, universe: list[str], bars: dict[str, list[Bar]],
                        risk: RiskManager, report: CycleReport) -> None:
-        held = {p.symbol for p in risk.positions}
+        held = {p.symbol for p in risk.positions} | self.journal.owned_symbols(self.mode)
         candidates: list[Signal] = []
         for symbol in universe:
             if symbol in held or symbol in self.open_orders or self.journal.has_pending(self.mode, symbol):
@@ -234,7 +310,7 @@ class Engine:
             self.journal.record_trade(self.mode, sig.symbol, "buy", size.qty, sig.price,
                                       order_id, reasons)
             stop = strategy.initial_stop(sig.price, sig.atr, strategy.stop_multiple(sig.price, self.s))
-            self.journal.save_stop(self.mode, sig.symbol, StopState(sig.price, stop, sig.price))
+            self.order_placed(sig.symbol, StopState(sig.price, stop, sig.price, qty=size.qty), "buy", order_id)
             report.buys.append(f"{sig.symbol} x{size.qty:g} @ ${sig.price:.2f}")
             self.journal.add_event(self.mode, "buy", f"Bought {size.qty:g} {sig.symbol} at about ${sig.price:.2f}")
             log.info("BUY %s x%s @ %.2f (stop %.2f)", sig.symbol, size.qty, sig.price, stop)
