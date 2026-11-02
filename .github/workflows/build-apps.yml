@@ -58,7 +58,7 @@ jobs:
           cache: true
       - name: Build
         working-directory: app
-        run: flutter build windows --release --build-number "$BUILD_NUMBER"
+        run: flutter build windows --release --build-number ${{ env.BUILD_NUMBER }}
       - name: Installer
         shell: pwsh
         run: |
