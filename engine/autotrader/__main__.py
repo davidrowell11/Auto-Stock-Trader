@@ -39,9 +39,28 @@ def main(argv: list[str] | None = None) -> int:
     settings = load_settings(**overrides)
 
     from .broker.alpaca_broker import AlpacaBroker
+    from .signals import QuiverClient, SecClient, SignalBook
 
-    engine = Engine(AlpacaBroker(mode), settings, Journal(settings.journal_path))
     log = logging.getLogger("autotrader")
+    broker = AlpacaBroker(mode)
+    if not os.environ.get("AUTOTRADER_SEC_CONTACT"):
+        log.warning("Set AUTOTRADER_SEC_CONTACT to your email; the SEC blocks anonymous requests.")
+    sec = SecClient()
+    quiver = QuiverClient()
+    if not quiver.enabled:
+        log.info("QUIVER_API_TOKEN not set: Congress trade signals are off.")
+    signals = SignalBook(sec=sec, quiver=quiver, bars_fetch=broker.get_daily_bars)
+
+    analyst = None
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        from .analyst import Analyst
+
+        analyst = Analyst()
+    else:
+        log.info("ANTHROPIC_API_KEY not set: the AI analyst is off, so penny stocks won't be bought.")
+
+    engine = Engine(broker, settings, Journal(settings.journal_path),
+                    filings_check=sec.penny_filings_check, signals=signals, analyst=analyst)
     log.info("Starting in %s mode, budget %s", mode.value,
              "whole account" if settings.budget is None else f"${settings.budget:,.0f}")
 

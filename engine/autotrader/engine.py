@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 
 from . import penny, strategy
 from . import indicators as ind
+from .analyst import AnalystUnavailable, AnalystView
 from .broker.base import Broker
 from .config import HARD_LIMITS, Mode, Settings
 from .journal import Journal, StopState
@@ -35,12 +36,16 @@ class CycleReport:
 
 class Engine:
     def __init__(self, broker: Broker, settings: Settings, journal: Journal,
-                 filings_check: penny.FilingsCheck = penny.no_filings_check) -> None:
+                 filings_check: penny.FilingsCheck = penny.no_filings_check,
+                 signals=None, analyst=None, penny_needs_analyst: bool = True) -> None:
         self.broker = broker
         self.s = settings
         self.journal = journal
         self.mode = settings.mode.value
         self.filings_check = filings_check
+        self.signals = signals  # SignalBook or None
+        self.analyst = analyst  # Analyst or None
+        self.penny_needs_analyst = penny_needs_analyst  # off only in backtests
 
     @property
     def needs_approval(self) -> bool:
@@ -138,15 +143,37 @@ class Engine:
                 continue
             candidates.append(sig)
 
-        for sig in sorted(candidates, key=lambda c: c.score, reverse=True):
+        candidates.sort(key=lambda c: c.score, reverse=True)
+        if self.signals is not None:
+            for sig in candidates[: self.s.max_signal_lookups]:
+                expert = self.signals.for_symbol(sig.symbol)
+                if expert.boost:
+                    sig.score = round(min(1.0, sig.score + expert.boost), 4)
+                    sig.reasons.extend(expert.reasons)
+            candidates.sort(key=lambda c: c.score, reverse=True)
+
+        reviews = 0
+        for sig in candidates:
             is_penny = penny.is_penny(sig.price, self.s)
             sector = sector_of(sig.symbol)
             size = risk.size_buy(sig.symbol, sig.price, sector, is_penny)
             if size.qty < 1:
                 report.skipped.append(f"{sig.symbol}: {size.note}")
                 continue
+            reasons = [f"Score {sig.score:.2f}", *sig.reasons, size.note]
+            if self.analyst is not None:
+                if not self.journal.todays_view(self.mode, sig.symbol):
+                    if reviews >= self.s.max_analyst_reviews:
+                        report.skipped.append(f"{sig.symbol}: waiting for an analyst review next cycle")
+                        continue
+                    reviews += 1
+                verdict = self._analyst_verdict(sig, is_penny)
+                if isinstance(verdict, str):
+                    report.skipped.append(f"{sig.symbol}: {verdict}")
+                    continue
+                if verdict is not None:
+                    reasons.append(f"Analyst ({verdict.confidence:.0%} confident): {verdict.reasoning}")
             limit = penny.limit_price_for_buy(sig.price) if is_penny else None
-            reasons = [f"Trend score {sig.score:.2f}", *sig.reasons, size.note]
             if self.needs_approval:
                 self.journal.queue_approval(self.mode, sig.symbol, "buy", size.qty, limit, reasons)
                 risk.register_buy(sig.symbol, size.qty, sig.price, sector)
@@ -167,6 +194,37 @@ class Engine:
             report.buys.append(f"{sig.symbol} x{size.qty} @ ${sig.price:.2f}")
             log.info("BUY %s x%s @ %.2f (stop %.2f)", sig.symbol, size.qty, sig.price, stop)
 
+    def _analyst_verdict(self, sig: Signal, is_penny: bool) -> AnalystView | str | None:
+        """The analyst's approval, a reason string to skip, or None if it was unavailable."""
+        cached = self.journal.todays_view(self.mode, sig.symbol)
+        if cached:
+            view = AnalystView(cached["action"], cached["confidence"], cached["reasoning"],
+                               cached["red_flags"])
+        else:
+            try:
+                view = self.analyst.review({
+                    "symbol": sig.symbol,
+                    "price": sig.price,
+                    "penny_stock": is_penny,
+                    "score": sig.score,
+                    "average_daily_move_dollars": round(sig.atr, 4),
+                    "why_the_rules_like_it": sig.reasons,
+                })
+            except AnalystUnavailable as exc:
+                log.warning("Analyst unavailable for %s: %s", sig.symbol, exc)
+                if is_penny:
+                    return "analyst unavailable, and penny stocks always need its approval"
+                return None
+            self.journal.save_view(self.mode, sig.symbol, sig.price, view.action, view.confidence,
+                                   view.reasoning, view.red_flags)
+        floor = self.s.penny_analyst_min_confidence if is_penny else self.s.analyst_min_confidence
+        if not view.approves:
+            flags = f" Red flags: {'; '.join(view.red_flags)}." if view.red_flags else ""
+            return f"analyst said skip: {view.reasoning}{flags}"
+        if view.confidence < floor:
+            return f"analyst confidence {view.confidence:.0%} is below the {floor:.0%} needed"
+        return view
+
     def _buy_problems(self, sig: Signal, history: list[Bar]) -> list[str]:
         asset = self.broker.get_asset(sig.symbol)
         if not asset.tradable:
@@ -176,6 +234,8 @@ class Engine:
         if sig.price < self.s.min_price:
             return [f"price under ${self.s.min_price:.2f}"]
         if penny.is_penny(sig.price, self.s):
+            if self.analyst is None and self.penny_needs_analyst:
+                return ["penny stocks are only bought with the AI analyst's approval"]
             return penny.penny_buy_problems(asset, history, sig, self.s, self.filings_check)
         dv = ind.avg_dollar_volume(history, 20)
         if dv is None or dv < self.s.min_dollar_volume:
