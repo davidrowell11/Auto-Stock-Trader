@@ -6,7 +6,11 @@ import 'demo.dart';
 
 /// App-wide state: which bot server we're connected to, and the theme.
 class AppState extends ChangeNotifier {
-  static const _storage = FlutterSecureStorage();
+  // On Mac, use the login keychain: the newer data-protection keychain needs an
+  // Apple developer account to sign the app, and the downloadable build has none.
+  static const _storage = FlutterSecureStorage(
+    mOptions: MacOsOptions(usesDataProtectionKeychain: false),
+  );
 
   TraderApi? api;
   bool demo = false;

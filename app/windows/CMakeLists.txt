@@ -53,6 +53,11 @@ add_subdirectory(${FLUTTER_MANAGED_DIR})
 add_subdirectory("runner")
 
 
+# The Face ID / Windows Hello plugin (local_auth_windows) still uses the old
+# experimental coroutine headers, which Visual Studio 2026 refuses to build
+# unless this is defined.
+add_compile_definitions(_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS)
+
 # Generated plugin build rules, which manage building the plugins and adding
 # them to the application.
 include(flutter/generated_plugins.cmake)
