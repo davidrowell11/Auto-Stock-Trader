@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 from . import penny, strategy
 from . import indicators as ind
@@ -367,6 +367,12 @@ class Engine:
             return ["not tradable"]
         if asset.is_otc:
             return ["OTC/pink-sheet stocks are never traded"]
+        sold = self.journal.last_protective_sell(self.mode, sig.symbol)
+        cooloff = timedelta(days=HARD_LIMITS.stop_out_cooloff_days)
+        if sold is not None and datetime.now(timezone.utc) - sold < cooloff:
+            back = sold + cooloff
+            until = f"{back:%b} {back.day}"
+            return [f"cooling off after it was sold to protect you (can buy again from {until})"]
         if sig.price < self.s.min_price:
             return [f"price under ${self.s.min_price:.2f}"]
         if self.earnings is not None:

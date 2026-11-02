@@ -99,6 +99,16 @@ class Journal:
                 (_now(), mode, symbol, side, qty, price, order_id, json.dumps(reasons)),
             )
 
+    def last_protective_sell(self, mode: str, symbol: str) -> datetime | None:
+        """When the bot last sold this stock to protect you (stop, trend break). Kill-switch sells don't count."""
+        cur = self.db.execute(
+            "SELECT ts FROM trades WHERE mode = ? AND symbol = ? AND side = 'sell'"
+            " AND reasons != ? ORDER BY id DESC LIMIT 1",
+            (mode, symbol, json.dumps(["Kill switch"])),
+        )
+        row = cur.fetchone()
+        return datetime.fromisoformat(row[0]) if row else None
+
     def trades(self, mode: str) -> list[dict]:
         cur = self.db.execute(
             "SELECT ts, symbol, side, qty, price, order_id, reasons FROM trades"

@@ -55,6 +55,7 @@ results as necessary, not as a promise.
 | Drawdown brake | Half-size buys at 10% below peak; all buying pauses at 15%. |
 | Market mood | Half-size buys and no penny stocks when SPY is below its 200-day average; no new buys in a confirmed market downtrend. |
 | Earnings guard | No buys in the week before a company reports earnings. |
+| Cool-off | After a stock is sold to protect you (stop or trend break), the bot won't buy it again for a week. |
 | Approvals expire | A suggested buy expires after 24 hours, and the rules are checked again when you approve it. |
 
 ## When to stop and look (rollback triggers)

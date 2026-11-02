@@ -139,6 +139,28 @@ class OrderTrackingTests(unittest.TestCase):
         eng.run_cycle()  # and it doesn't come back for yours
         self.assertEqual(len([o for o in broker.orders if o.side is Side.SELL]), 1)
 
+    def test_no_rebuy_for_a_week_after_a_stop_out(self):
+        broker = SimBroker(100_000, {"AAPL": make_bars(uptrend())})
+        j = Journal()
+        eng = Engine(broker, Settings().clamped(), j)
+        eng.run_cycle()
+        crash(broker)
+        eng.run_cycle()  # stop-out sell
+        broker.bars["AAPL"] = make_bars(uptrend())  # trend looks fine again next day
+        report = eng.run_cycle()
+        self.assertEqual([o.side for o in broker.orders], [Side.BUY, Side.SELL])
+        self.assertTrue(any("cooling off" in x for x in report.skipped))
+        old = (datetime.now(timezone.utc) - timedelta(days=8)).isoformat(timespec="seconds")
+        with j.db:
+            j.db.execute("UPDATE trades SET ts = ? WHERE side = 'sell'", (old,))
+        eng.run_cycle()
+        self.assertEqual(broker.orders[-1].side, Side.BUY)  # a week later it may buy again
+
+    def test_kill_switch_sell_has_no_cooloff(self):
+        j = Journal()
+        j.record_trade("test", "AAPL", "sell", 1, 50, None, ["Kill switch"])
+        self.assertIsNone(j.last_protective_sell("test", "AAPL"))
+
     def test_old_journal_is_upgraded(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = f"{tmp}/j.sqlite3"
