@@ -89,6 +89,22 @@ happened and the signal feeds aren't point-in-time; they're judged going
 forward through the scorecard instead. The default stock list is today's
 large companies, so results are flattered by survivorship bias.
 
+## App server
+
+The app talks to the bot through a small web server:
+
+```sh
+cd engine
+AUTOTRADER_APP_TOKEN=<long random string> python -m autotrader.server
+```
+
+It listens on `PORT` (default 8000). Every request must carry the token as
+`Authorization: Bearer <token>`. On Replit, set the run command to
+`cd engine && python -m autotrader.server`, put the token and your API keys
+in Replit Secrets, and use an always-on Reserved VM so the bot keeps running.
+The server runs one bot loop per mode (Test and Live) and stores app
+settings in `data/app_settings.json`.
+
 ## Tests
 
 ```sh
@@ -100,4 +116,4 @@ PYTHONPATH=.:tests python -m unittest discover -s tests
 
 * Hedge fund (13F) signals and a stock screener that finds candidates beyond
   the starting list, including penny stocks.
-* Step 3: the app (Test tab, Live section, approvals, budget slider).
+* Step 4: go live small with a kill switch.

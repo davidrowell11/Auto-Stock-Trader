@@ -124,7 +124,10 @@ class Journal:
             " WHERE mode = ? AND status = 'pending' ORDER BY id", (mode,),
         )
         cols = [c[0] for c in cur.description]
-        return [dict(zip(cols, r)) for r in cur.fetchall()]
+        rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+        for r in rows:
+            r["reasons"] = json.loads(r["reasons"])
+        return rows
 
     def get_approval(self, approval_id: int) -> dict | None:
         cur = self.db.execute(
