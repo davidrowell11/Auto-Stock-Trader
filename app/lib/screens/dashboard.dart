@@ -1,12 +1,14 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
 
 import '../api.dart';
 import '../models.dart';
 import '../state.dart';
 import '../theme.dart';
 import '../widgets.dart';
+import 'settings.dart' show parseMoney;
 import 'stock_detail.dart';
 
 /// The Test tab and the Live section. Same bot, separate money and history.
@@ -29,7 +31,9 @@ class _DashboardState extends State<Dashboard> {
   Readiness? readiness;
   String? error;
   double? budgetDraft;
+  LiveStatus? liveStatus;
   Timer? timer;
+  Timer? liveTimer; // the "What the bot is doing" section refreshes faster
 
   bool get live => widget.mode == 'live';
 
@@ -38,11 +42,26 @@ class _DashboardState extends State<Dashboard> {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) => refresh());
     timer = Timer.periodic(const Duration(seconds: 30), (_) => refresh());
+    liveTimer = Timer.periodic(
+      const Duration(seconds: 5),
+      (_) => refreshLive(),
+    );
+  }
+
+  /// Just the live status: cheap for the server, so it updates every few seconds.
+  Future<void> refreshLive() async {
+    // Only while the bot runs; when stopped, the 30-second refresh is enough.
+    if (!mounted || summary?.running != true) return;
+    try {
+      final l = await api.live(widget.mode);
+      if (mounted) setState(() => liveStatus = l);
+    } catch (_) {} // older servers don't have it; the main refresh shows errors
   }
 
   @override
   void dispose() {
     timer?.cancel();
+    liveTimer?.cancel();
     super.dispose();
   }
 
@@ -59,6 +78,12 @@ class _DashboardState extends State<Dashboard> {
         api.events(m),
         api.approvals(m),
         api.weekly(m),
+        api
+            .live(m)
+            .then<LiveStatus?>((l) => l)
+            .catchError(
+              (_) => null, // older servers don't have it
+            ),
       ]);
       final c = results[2] as List<EquityPoint>;
       List<EquityPoint> b = [];
@@ -83,6 +108,7 @@ class _DashboardState extends State<Dashboard> {
       }
       if (!mounted) return;
       setState(() {
+        liveStatus = results[6] as LiveStatus? ?? liveStatus;
         readiness = ready;
         summary = results[0] as Summary;
         holdings = results[1] as List<Holding>;
@@ -141,6 +167,7 @@ class _DashboardState extends State<Dashboard> {
           _header(s, demo),
           if (s.buyingPaused != null) _pausedCard(s.buyingPaused!),
           if (s.mood != null) _moodLine(s.mood!, s.moodLevel),
+          if (liveStatus != null) _liveCard(liveStatus!, s),
           if (live && !s.running && readiness != null)
             _readinessCard(readiness!),
           if (live && approvals.isNotEmpty) ...[
@@ -288,6 +315,7 @@ class _DashboardState extends State<Dashboard> {
                 live ? 'Live cap' : 'Budget',
                 s.budget,
                 fallback: 'Whole account',
+                onTap: live ? null : () => _typeBudget(s),
               ),
             ],
           ),
@@ -357,8 +385,17 @@ class _DashboardState extends State<Dashboard> {
     ],
   );
 
-  Widget _stat(String label, double? v, {String fallback = '—'}) => Expanded(
-    child: Column(
+  Widget _stat(
+    String label,
+    double? v, {
+    String fallback = '—',
+    VoidCallback? onTap,
+  }) {
+    final value = Text(
+      v == null ? fallback : moneyRound.format(v),
+      style: const TextStyle(fontWeight: FontWeight.w700),
+    );
+    final column = Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(
@@ -367,13 +404,114 @@ class _DashboardState extends State<Dashboard> {
               ?.copyWith(color: AppColors.muted),
         ),
         const SizedBox(height: 2),
-        Text(
-          v == null ? fallback : moneyRound.format(v),
-          style: const TextStyle(fontWeight: FontWeight.w700),
-        ),
+        if (onTap == null)
+          value
+        else
+          Row(
+            children: [
+              Flexible(child: value),
+              const SizedBox(width: 6),
+              Icon(Icons.edit_rounded, size: 16, color: AppColors.muted),
+            ],
+          ),
       ],
-    ),
-  );
+    );
+    if (onTap == null) return Expanded(child: column);
+    return Expanded(
+      child: Semantics(
+        button: true,
+        label: 'Change $label',
+        excludeSemantics: false,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(8),
+          onTap: onTap,
+          child: column,
+        ),
+      ),
+    );
+  }
+
+  /// Type an exact Test budget instead of using the slider.
+  Future<void> _typeBudget(Summary s) async {
+    final equity = s.equity;
+    if (equity == null) return; // not connected to the broker yet
+    final maxBudget = equity < 1000
+        ? 1000.0
+        : equity; // same limits as the slider
+    final ctrl = TextEditingController(
+      text: s.budget?.toStringAsFixed(0) ?? '',
+    );
+    final result = await showDialog<String>(
+      context: context,
+      builder: (c) => AlertDialog(
+        title: const Text('Test budget'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'How much of the ${moneyRound.format(equity)} fake money the bot may use.',
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: ctrl,
+              autofocus: true,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(
+                prefixText: '\$ ',
+                hintText: 'For example 10000',
+              ),
+              // Enter on an empty box does nothing (it isn't "whole account").
+              onSubmitted: (v) {
+                if (v.trim().isNotEmpty) Navigator.pop(c, v);
+              },
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(c),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(c, ''),
+            child: const Text('Use whole account'),
+          ),
+          FilledButton(
+            onPressed: () =>
+                Navigator.pop(c, ctrl.text.trim().isEmpty ? null : ctrl.text),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+    if (result == null) return;
+    final text = result.trim();
+    if (text.isEmpty) {
+      await _run(
+        () => api.updateSettings('test', {'clear_budget': true}),
+        'Test budget: whole account',
+      );
+      return;
+    }
+    final v = parseMoney(text);
+    if (v == null || v < 100 || v > maxBudget) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Enter an amount from \$100 to ${moneyRound.format(maxBudget)}. The budget was not changed.',
+            ),
+          ),
+        );
+      }
+      return;
+    }
+    await _run(
+      () => api.updateSettings('test', {'budget': v}),
+      'Test budget saved: ${moneyRound.format(v)}',
+    );
+  }
 
   Future<void> _killSwitch() async {
     final choice = await showDialog<String>(
@@ -609,6 +747,167 @@ class _DashboardState extends State<Dashboard> {
     );
   }
 
+  /// "What the bot is doing": its current step, recent steps and last results.
+  Widget _liveCard(LiveStatus l, Summary s) {
+    final t = Theme.of(context).textTheme;
+    final time = DateFormat.jms();
+    final active = s.running && s.error == null;
+    final color = !s.running
+        ? AppColors.muted
+        : s.error != null
+        ? AppColors.loss
+        : AppColors.gain;
+    String? next;
+    if (l.nextCheck != null) {
+      final mins = l.nextCheck!.difference(DateTime.now()).inMinutes;
+      next = mins < 1 ? 'Next check any moment' : 'Next check in $mins min';
+    }
+    final last = l.lastCycle;
+    return Padding(
+      padding: const EdgeInsets.only(top: 14),
+      child: GlassCard(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: l.working
+                      ? CircularProgressIndicator(strokeWidth: 2, color: color)
+                      : Center(
+                          child: Container(
+                            width: 10,
+                            height: 10,
+                            decoration: BoxDecoration(
+                              color: color,
+                              shape: BoxShape.circle,
+                            ),
+                          ),
+                        ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    'What the bot is doing',
+                    style: t.titleMedium?.copyWith(fontWeight: FontWeight.w700),
+                  ),
+                ),
+                if (active && next != null && !l.working)
+                  Text(
+                    next,
+                    style: t.bodySmall?.copyWith(color: AppColors.muted),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            Text(
+              l.working ? '${l.now}…' : l.now,
+              style: t.bodyLarge?.copyWith(fontWeight: FontWeight.w600),
+            ),
+            if (last != null) ...[
+              const SizedBox(height: 6),
+              Text(
+                'Last check ${ago(last.ts)} · looked at ${last.checked} stocks',
+                style: t.bodySmall?.copyWith(color: AppColors.muted),
+              ),
+            ],
+            if (l.steps.isNotEmpty)
+              ExpansionTile(
+                tilePadding: EdgeInsets.zero,
+                childrenPadding: EdgeInsets.zero,
+                shape: const Border(),
+                collapsedShape: const Border(),
+                title: Text('Step by step', style: t.titleSmall),
+                children: [
+                  for (final st in l.steps.take(30))
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 4),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          SizedBox(
+                            width: 92,
+                            child: Text(
+                              time.format(st.ts.toLocal()),
+                              style: t.bodySmall?.copyWith(
+                                color: AppColors.muted,
+                                fontFeatures: const [
+                                  FontFeature.tabularFigures(),
+                                ],
+                              ),
+                            ),
+                          ),
+                          Expanded(child: Text(st.text, style: t.bodyMedium)),
+                        ],
+                      ),
+                    ),
+                ],
+              ),
+            if (last != null && last.skipped.isNotEmpty)
+              ExpansionTile(
+                tilePadding: EdgeInsets.zero,
+                childrenPadding: EdgeInsets.zero,
+                shape: const Border(),
+                collapsedShape: const Border(),
+                title: Text(
+                  'Why it passed on ${last.skippedTotal} stock${last.skippedTotal == 1 ? '' : 's'}',
+                  style: t.titleSmall,
+                ),
+                children: [
+                  for (final x in last.skipped)
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 4),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Padding(
+                            padding: const EdgeInsets.only(top: 2, right: 8),
+                            child: Icon(
+                              Icons.remove_circle_outline_rounded,
+                              size: 16,
+                              color: AppColors.muted,
+                            ),
+                          ),
+                          Expanded(child: _skipText(x, t)),
+                        ],
+                      ),
+                    ),
+                  if (last.skippedTotal > last.skipped.length)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 4),
+                      child: Text(
+                        'and ${last.skippedTotal - last.skipped.length} more',
+                        style: t.bodySmall?.copyWith(color: AppColors.muted),
+                      ),
+                    ),
+                ],
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// "AAPL: price under $1.00" with the symbol in bold.
+  Widget _skipText(String x, TextTheme t) {
+    final i = x.indexOf(': ');
+    if (i < 0) return Text(x, style: t.bodyMedium);
+    return Text.rich(
+      TextSpan(
+        style: t.bodyMedium,
+        children: [
+          TextSpan(
+            text: x.substring(0, i),
+            style: const TextStyle(fontWeight: FontWeight.w700),
+          ),
+          TextSpan(text: '  ${x.substring(i + 2)}'),
+        ],
+      ),
+    );
+  }
+
   Widget _budgetCard(Summary s) {
     final equity = s.equity ?? 100000;
     final maxBudget = (equity < 1000 ? 1000.0 : equity);
@@ -633,18 +932,22 @@ class _DashboardState extends State<Dashboard> {
                         ?.copyWith(fontWeight: FontWeight.w700),
                   ),
                 ),
-                Text(
-                  moneyRound.format(value),
-                  style: const TextStyle(
-                    fontWeight: FontWeight.w800,
-                    fontSize: 18,
+                TextButton.icon(
+                  onPressed: () => _typeBudget(s),
+                  icon: const Icon(Icons.edit_rounded, size: 18),
+                  label: Text(
+                    moneyRound.format(value),
+                    style: const TextStyle(
+                      fontWeight: FontWeight.w800,
+                      fontSize: 18,
+                    ),
                   ),
                 ),
               ],
             ),
             const SizedBox(height: 4),
             Text(
-              'How much fake money the bot may use for this test.',
+              'How much fake money the bot may use for this test. Drag the slider, or tap the amount to type one.',
               style: Theme.of(context).textTheme.bodySmall
                   ?.copyWith(color: AppColors.muted),
             ),

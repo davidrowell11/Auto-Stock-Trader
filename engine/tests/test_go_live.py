@@ -198,13 +198,12 @@ class ServerGoLiveTests(unittest.TestCase):
         r.settings  # noqa: B018
         calls = {"n": 0}
 
-        def wait(_):
+        def pause(_):
             calls["n"] += 1
             if calls["n"] >= 3:
-                r._stop.set()
-            return False
+                r.stop_thread()
 
-        r._stop.wait = wait
+        r._pause = pause
         r.loop()
         self.assertIn("failed in a row", self.store.get(Mode.LIVE)["buying_paused"])
 

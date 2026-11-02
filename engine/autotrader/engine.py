@@ -58,6 +58,27 @@ class CycleReport:
     halted: str | None = None
     mood: str | None = None
     mood_level: str | None = None
+    checked: int = 0  # stocks looked at for buys
+
+    def summary(self) -> str:
+        """One line for the app, e.g. "Checked 52 stocks: bought MSFT"."""
+        did = []
+        if self.buys:
+            did.append(f"bought {', '.join(b.split(' x')[0] for b in self.buys)}")
+        if self.sells:
+            did.append(f"sold {', '.join(x.split(':')[0] for x in self.sells)}")
+        if self.queued:
+            did.append(f"asked you about {', '.join(q.split(' x')[0] for q in self.queued)}")
+        if "bot stopped mid-cycle" in self.skipped:
+            did.append("stopped partway through")
+        if self.halted:
+            did.append(f"no new buys ({self.halted})")
+            head = "Checked the stocks it owns"
+        else:
+            head = f"Checked {self.checked} stocks"
+        if not did:
+            did.append("no trades needed")
+        return f"{head}: " + "; ".join(did)
 
 
 class Engine:
@@ -66,7 +87,8 @@ class Engine:
                  signals=None, analyst=None, penny_needs_analyst: bool = True,
                  keep_going: Callable[[], bool] = lambda: True,
                  earnings: Callable[[str], str | None] | None = None,
-                 pause_buying: str | None = None) -> None:
+                 pause_buying: str | None = None,
+                 progress: Callable[[str], None] = lambda step: None) -> None:
         self.broker = broker
         self.s = settings
         self.journal = journal
@@ -84,6 +106,8 @@ class Engine:
         self.mood = Mood("calm", 1.0, True, "")
         # Set when Live stopped itself (e.g. after a big loss): keep protecting holdings, buy nothing.
         self.pause_buying = pause_buying
+        # Plain-English steps for the app's "What the bot is doing" section.
+        self.progress = progress
 
     @property
     def needs_approval(self) -> bool:
@@ -145,19 +169,26 @@ class Engine:
         if expired:
             self.journal.add_event(self.mode, "approval",
                                    f"{expired} suggested buy{'s' if expired > 1 else ''} expired after a day")
+        self.progress("Checking the account")
         account = self.broker.get_account()
         self.journal.record_equity(self.mode, account.equity)
         # Anyone's unfilled orders: the bot won't open a new trade in those stocks.
         self.open_orders = self.broker.open_order_symbols()
         # The bot only manages stocks it bought itself; anything else in the account is yours.
         positions, self.working = self.sync_holdings()
+        self.progress(f"Watching {len(positions)} stock{'' if len(positions) == 1 else 's'} it owns"
+                      if positions else "It doesn't own any stocks yet")
 
         universe = build_universe(self.s.always_watch, self.s.never_buy)
         symbols = sorted(set(universe) | {p.symbol for p in positions} | {MARKET})
+        self.progress(f"Getting prices for {len(symbols)} stocks")
         bars = self.broker.get_daily_bars(symbols, HISTORY_DAYS)
         self.mood = market_mood(bars.get(MARKET))
         report.mood = self.mood.note
         report.mood_level = self.mood.level
+        report.checked = len(universe)
+        if self.mood.note:
+            self.progress(f"Market mood: {self.mood.note}")
 
         kept = self._monitor_positions(positions, bars, report)
 
@@ -167,6 +198,7 @@ class Engine:
                          or (self.mood.note if self.mood.blocks_buying else None))
         if report.halted:
             log.warning("No new buys: %s", report.halted)
+            self.progress(f"Not buying today: {report.halted}")
             return report
         self._scan_for_buys(universe, bars, risk, report)
         return report
@@ -195,6 +227,8 @@ class Engine:
                                                        atr, multiple)
             self.journal.save_stop(self.mode, p.symbol, state)
 
+            self.progress(f"Checking {p.symbol}: price ${p.current_price:,.2f}, "
+                          f"safety stop ${state.stop_price:,.2f}")
             reason = strategy.exit_reason(history, state.stop_price) if history else None
             if reason is None and p.current_price <= state.stop_price:
                 reason = f"Hit stop at ${state.stop_price:.2f}"
@@ -212,6 +246,7 @@ class Engine:
         order = OrderRequest(p.symbol, Side.SELL, p.qty, limit, reason)
         if not self.keep_going():
             return False
+        self.progress(f"Selling {p.symbol}: {reason}")
         try:
             order_id = self.broker.submit_order(order)
         except Exception as exc:  # broker errors must not stop the rest of the cycle
@@ -232,6 +267,7 @@ class Engine:
     def _scan_for_buys(self, universe: list[str], bars: dict[str, list[Bar]],
                        risk: RiskManager, report: CycleReport) -> None:
         held = {p.symbol for p in risk.positions} | self.journal.owned_symbols(self.mode)
+        self.progress(f"Looking for buys among {len(universe)} stocks")
         candidates: list[Signal] = []
         for symbol in universe:
             if symbol in held or symbol in self.open_orders or self.journal.has_pending(self.mode, symbol):
@@ -253,6 +289,14 @@ class Engine:
             candidates.append(sig)
 
         candidates.sort(key=lambda c: c.score, reverse=True)
+        if candidates:
+            self.progress(f"{len(candidates)} passed the trend and safety checks: "
+                          + ", ".join(c.symbol for c in candidates[:8])
+                          + ("…" if len(candidates) > 8 else ""))
+        else:
+            self.progress("No stock passed every check this time")
+        if self.signals is not None and candidates:
+            self.progress("Checking what Congress members and company insiders are buying")
         if self.signals is not None:
             for sig in candidates[: self.s.max_signal_lookups]:
                 expert = self.signals.for_symbol(sig.symbol)
@@ -282,9 +326,11 @@ class Engine:
                         report.skipped.append(f"{sig.symbol}: waiting for an analyst review next cycle")
                         continue
                     reviews += 1
+                    self.progress(f"Asking the AI analyst about {sig.symbol}")
                 verdict = self._analyst_verdict(sig, is_penny, cached)
                 if isinstance(verdict, str):
                     report.skipped.append(f"{sig.symbol}: {verdict}")
+                    self.progress(f"Skipped {sig.symbol}: {verdict}")
                     continue
                 if verdict is not None:
                     reasons.append(f"Analyst ({verdict.confidence:.0%} confident): {verdict.reasoning}")
@@ -293,12 +339,14 @@ class Engine:
                 self.journal.queue_approval(self.mode, sig.symbol, "buy", size.qty, limit, reasons)
                 risk.register_buy(sig.symbol, size.qty, sig.price, sector)
                 report.queued.append(f"{sig.symbol} x{size.qty:g}")
+                self.progress(f"Asking you to approve buying {size.qty:g} {sig.symbol}")
                 self.journal.add_event(self.mode, "approval",
                                        f"Wants to buy {size.qty:g} {sig.symbol} at about ${sig.price:.2f}. Tap to approve.")
                 continue
             if not self.keep_going():
                 report.skipped.append("bot stopped mid-cycle")
                 return
+            self.progress(f"Buying {size.qty:g} {sig.symbol} at about ${sig.price:,.2f}")
             try:
                 order_id = self.broker.submit_order(
                     OrderRequest(sig.symbol, Side.BUY, size.qty, limit, reasons[0]))

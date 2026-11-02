@@ -22,6 +22,7 @@ abstract class TraderApi {
   Future<List<Trade>> trades(String mode);
   Future<List<EquityPoint>> equity(String mode);
   Future<List<ActivityEvent>> events(String mode);
+  Future<LiveStatus> live(String mode);
   Future<AnalystFeed> analyst(String mode);
   Future<List<Approval>> approvals(String mode);
   Future<void> decide(String mode, int id, bool approve);
@@ -122,6 +123,10 @@ class HttpApi implements TraderApi {
     for (final j in await _send('GET', '/api/$mode/events'))
       ActivityEvent.fromJson(j),
   ];
+
+  @override
+  Future<LiveStatus> live(String mode) async =>
+      LiveStatus.fromJson(await _send('GET', '/api/$mode/live'));
 
   @override
   Future<AnalystFeed> analyst(String mode) async =>

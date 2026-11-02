@@ -267,6 +267,39 @@ class ServerTests(unittest.TestCase):
         r.lock.release()
         self.assertTrue(done.wait(5))
 
+    def test_live_status_shows_what_the_bot_is_doing(self):
+        r = self.runners[Mode.TEST]
+        self.brokers[Mode.TEST] = SimBroker(100_000, {"AAPL": make_bars(uptrend())})
+        r.broker = self.brokers[Mode.TEST]
+        self.c.post("/api/test/start", headers=AUTH)
+        r.run_once()
+        live = self.c.get("/api/test/live", headers=AUTH).json()
+        texts = [s["text"] for s in live["steps"]]
+        self.assertTrue(any(t.startswith("Looking for buys") for t in texts))
+        self.assertTrue(any(t.startswith("Buying") and "AAPL" in t for t in texts))
+        self.assertIn("bought AAPL", live["last_cycle"]["summary"])
+        self.assertEqual(live["steps"][0]["text"], live["last_cycle"]["summary"])  # newest first
+        self.assertFalse(live["working"])
+        self.c.post("/api/test/stop", headers=AUTH)
+        self.assertTrue(self.c.get("/api/test/live", headers=AUTH).json()["now"].startswith("Stopped"))
+
+    def test_stopped_bot_never_shows_as_resting(self):
+        r = self.runners[Mode.TEST]
+        r.broker = SimBroker(100_000, {"AAPL": make_bars(uptrend())})
+        self.c.post("/api/test/start", headers=AUTH)
+        r.step("Resting until the next check.", log_it=False)
+        r.next_check = "2099-01-01T00:00:00+00:00"
+        self.store.update(Mode.TEST, {"running": False})  # Stop pressed during a check
+        live = self.c.get("/api/test/live", headers=AUTH).json()
+        self.assertTrue(live["now"].startswith("Stopped"))
+        self.assertIsNone(live["next_check"])
+
+    def test_summary_says_when_buying_was_blocked(self):
+        from autotrader.engine import CycleReport
+        rep = CycleReport(halted="market in a confirmed downtrend", checked=52)
+        self.assertIn("no new buys (market in a confirmed downtrend)", rep.summary())
+        self.assertNotIn("52", rep.summary())
+
     def test_reject_only_pending(self):
         aid = self.journal.queue_approval("live", "AAPL", "buy", 1, None, ["x"])
         self.journal.set_approval_status(aid, "expired")
