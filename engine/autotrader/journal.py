@@ -36,6 +36,10 @@ CREATE TABLE IF NOT EXISTS analyst_views (
     price REAL NOT NULL, action TEXT NOT NULL, confidence REAL NOT NULL,
     reasoning TEXT NOT NULL, red_flags TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS events (
+    id INTEGER PRIMARY KEY,
+    ts TEXT NOT NULL, mode TEXT NOT NULL, kind TEXT NOT NULL, message TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS equity (
     ts TEXT NOT NULL, mode TEXT NOT NULL, equity REAL NOT NULL
 );
@@ -57,7 +61,7 @@ class Journal:
     def __init__(self, path: str | Path = ":memory:") -> None:
         if str(path) != ":memory:":
             Path(path).parent.mkdir(parents=True, exist_ok=True)
-        self.db = sqlite3.connect(str(path))
+        self.db = sqlite3.connect(str(path), check_same_thread=False)  # server serializes access
         self.db.executescript(SCHEMA)
 
     # ----- trades -----
@@ -120,7 +124,26 @@ class Journal:
             " WHERE mode = ? AND status = 'pending' ORDER BY id", (mode,),
         )
         cols = [c[0] for c in cur.description]
-        return [dict(zip(cols, r)) for r in cur.fetchall()]
+        rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+        for r in rows:
+            r["reasons"] = json.loads(r["reasons"])
+        return rows
+
+    def get_approval(self, approval_id: int) -> dict | None:
+        cur = self.db.execute(
+            "SELECT id, ts, mode, symbol, side, qty, limit_price, reasons, status FROM approvals"
+            " WHERE id = ?", (approval_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        out = dict(zip([c[0] for c in cur.description], row))
+        out["reasons"] = json.loads(out["reasons"])
+        return out
+
+    def set_approval_status(self, approval_id: int, status: str) -> None:
+        with self.db:
+            self.db.execute("UPDATE approvals SET status = ? WHERE id = ?", (status, approval_id))
 
     def has_pending(self, mode: str, symbol: str) -> bool:
         return self.db.execute(
@@ -158,6 +181,27 @@ class Journal:
         )
         cols = [c[0] for c in cur.description]
         return [dict(zip(cols, r)) for r in cur.fetchall()]
+
+    # ----- activity feed (what the app shows as alerts) -----
+    def add_event(self, mode: str, kind: str, message: str) -> None:
+        with self.db:
+            self.db.execute("INSERT INTO events (ts, mode, kind, message) VALUES (?, ?, ?, ?)",
+                            (_now(), mode, kind, message))
+
+    def events(self, mode: str, limit: int = 100) -> list[dict]:
+        cur = self.db.execute(
+            "SELECT id, ts, kind, message FROM events WHERE mode = ? ORDER BY id DESC LIMIT ?",
+            (mode, limit),
+        )
+        cols = [c[0] for c in cur.description]
+        return [dict(zip(cols, r)) for r in cur.fetchall()]
+
+    def equity_history(self, mode: str, limit: int = 2000) -> list[dict]:
+        cur = self.db.execute(
+            "SELECT ts, equity FROM equity WHERE mode = ? ORDER BY rowid DESC LIMIT ?",
+            (mode, limit),
+        )
+        return [{"ts": ts, "equity": eq} for ts, eq in reversed(cur.fetchall())]
 
     # ----- equity history (for the drawdown brake) -----
     def record_equity(self, mode: str, equity: float) -> None:
