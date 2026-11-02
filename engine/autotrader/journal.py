@@ -30,6 +30,12 @@ CREATE TABLE IF NOT EXISTS approvals (
     qty REAL NOT NULL, limit_price REAL, reasons TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'pending'
 );
+CREATE TABLE IF NOT EXISTS analyst_views (
+    id INTEGER PRIMARY KEY,
+    ts TEXT NOT NULL, day TEXT NOT NULL, mode TEXT NOT NULL, symbol TEXT NOT NULL,
+    price REAL NOT NULL, action TEXT NOT NULL, confidence REAL NOT NULL,
+    reasoning TEXT NOT NULL, red_flags TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS equity (
     ts TEXT NOT NULL, mode TEXT NOT NULL, equity REAL NOT NULL
 );
@@ -121,6 +127,37 @@ class Journal:
             "SELECT 1 FROM approvals WHERE mode = ? AND symbol = ? AND status = 'pending'",
             (mode, symbol),
         ).fetchone() is not None
+
+    # ----- AI analyst views (cached per day; also the analyst's scorecard) -----
+    def save_view(self, mode: str, symbol: str, price: float, action: str, confidence: float,
+                  reasoning: str, red_flags: list[str]) -> None:
+        with self.db:
+            self.db.execute(
+                "INSERT INTO analyst_views (ts, day, mode, symbol, price, action, confidence,"
+                " reasoning, red_flags) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (_now(), _now()[:10], mode, symbol, price, action, confidence, reasoning,
+                 json.dumps(red_flags)),
+            )
+
+    def todays_view(self, mode: str, symbol: str) -> dict | None:
+        cur = self.db.execute(
+            "SELECT action, confidence, reasoning, red_flags FROM analyst_views"
+            " WHERE mode = ? AND symbol = ? AND day = ? ORDER BY id DESC LIMIT 1",
+            (mode, symbol, _now()[:10]),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        return {"action": row[0], "confidence": row[1], "reasoning": row[2],
+                "red_flags": json.loads(row[3])}
+
+    def views(self, mode: str) -> list[dict]:
+        cur = self.db.execute(
+            "SELECT day, symbol, price, action, confidence, reasoning FROM analyst_views"
+            " WHERE mode = ? ORDER BY id", (mode,),
+        )
+        cols = [c[0] for c in cur.description]
+        return [dict(zip(cols, r)) for r in cur.fetchall()]
 
     # ----- equity history (for the drawdown brake) -----
     def record_equity(self, mode: str, equity: float) -> None:

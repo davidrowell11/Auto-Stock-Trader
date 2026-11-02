@@ -15,6 +15,7 @@ class SimBroker(Broker):
         bars: dict[str, list[Bar]],
         assets: dict[str, Asset] | None = None,
         market_open: bool = True,
+        slippage_bps: float = 0.0,
     ) -> None:
         self.cash = cash
         self.bars = bars
@@ -23,6 +24,8 @@ class SimBroker(Broker):
         self.holdings: dict[str, tuple[float, float]] = {}  # symbol -> (qty, avg price)
         self.orders: list[OrderRequest] = []
         self.last_equity = cash
+        self.slippage = slippage_bps / 10_000  # trading cost charged on every fill
+        self.realized: list[float] = []  # profit or loss of each closed sale
 
     def price(self, symbol: str) -> float:
         return self.bars[symbol][-1].close
@@ -53,12 +56,15 @@ class SimBroker(Broker):
         self.orders.append(order)
         qty, avg = self.holdings.get(order.symbol, (0.0, 0.0))
         if order.side is Side.BUY:
+            price *= 1 + self.slippage
             new_qty = qty + order.qty
             self.holdings[order.symbol] = (new_qty, (qty * avg + order.qty * price) / new_qty)
             self.cash -= order.qty * price
         else:
+            price *= 1 - self.slippage
             sell = min(order.qty, qty)
             self.cash += sell * price
+            self.realized.append(sell * (price - avg))
             if qty - sell <= 0:
                 self.holdings.pop(order.symbol, None)
             else:
