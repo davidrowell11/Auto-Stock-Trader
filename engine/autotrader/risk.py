@@ -12,7 +12,7 @@ from .models import Account, Position
 
 @dataclass(frozen=True)
 class SizeDecision:
-    qty: int
+    qty: float  # whole shares, or fractions when the stock allows it
     note: str
 
 
@@ -23,11 +23,13 @@ class RiskManager:
         account: Account,
         positions: Sequence[Position],
         peak_equity: float,
+        mood_multiplier: float = 1.0,
     ) -> None:
         self.s = settings
         self.account = account
         self.positions = list(positions)
         self.peak_equity = max(peak_equity, account.equity)
+        self.mood_multiplier = mood_multiplier  # from the market mood check
 
     # ----- how much money the bot may use -----
     @property
@@ -64,10 +66,15 @@ class RiskManager:
 
     @property
     def size_multiplier(self) -> float:
-        return 0.5 if self.drawdown >= self.s.drawdown_brake_pct else 1.0
+        brake = 0.5 if self.drawdown >= self.s.drawdown_brake_pct else 1.0
+        return brake * self.mood_multiplier
 
     # ----- position sizing -----
-    def size_buy(self, symbol: str, price: float, sector: str, penny: bool) -> SizeDecision:
+    MIN_FRACTIONAL_DOLLARS = 1.0  # Alpaca's smallest fractional order
+
+    def size_buy(self, symbol: str, price: float, sector: str, penny: bool,
+                 fractional: bool = False) -> SizeDecision:
+        """How much to buy. Fractional shares let a small budget hold pricey stocks."""
         if price <= 0:
             return SizeDecision(0, "No valid price")
         if any(p.symbol == symbol for p in self.positions):
@@ -95,12 +102,17 @@ class RiskManager:
 
         binding = min(limits, key=limits.get)
         dollars = limits[binding]
-        qty = math.floor(dollars / price) if dollars > 0 else 0
-        if qty < 1:
+        if fractional and not penny:
+            qty = math.floor(dollars / price * 1000) / 1000 if dollars > 0 else 0
+            if qty * price < self.MIN_FRACTIONAL_DOLLARS:
+                qty = 0
+        else:
+            qty = math.floor(dollars / price) if dollars > 0 else 0
+        if qty <= 0:
             return SizeDecision(0, f"No room under the {binding}")
-        return SizeDecision(qty, f"{qty} shares, limited by {binding}")
+        return SizeDecision(qty, f"{qty:g} shares, limited by {binding}")
 
-    def register_buy(self, symbol: str, qty: int, price: float, sector: str) -> None:
+    def register_buy(self, symbol: str, qty: float, price: float, sector: str) -> None:
         """Count a just-placed buy so the next sizing in the same cycle sees it."""
         self.positions.append(Position(symbol, qty, price, price, sector))
         self.account = Account(

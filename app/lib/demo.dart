@@ -28,7 +28,7 @@ class DemoApi implements TraderApi {
       cashReservePct: 0.10,
     ),
     'live': BotSettings(
-      budget: 2500,
+      budget: 1000,
       approveMode: true,
       alwaysWatch: [],
       neverBuy: ['GME'],
@@ -88,6 +88,8 @@ class DemoApi implements TraderApi {
       invested: last * 0.68,
       positions: (await positions(mode)).length,
       marketOpen: true,
+      moodLevel: 'calm',
+      mood: 'Market calm: SPY \$683.20 is above its 200-day average',
     );
   }
 
@@ -296,6 +298,34 @@ class DemoApi implements TraderApi {
   }
 
   @override
+  Future<Readiness> readiness() async => Readiness(
+    ready: false,
+    readyExceptResults: true,
+    skipAllowed: false,
+    starterCap: 1000,
+    checks: [
+      ReadinessCheck(
+        '8+ weeks of Test results',
+        false,
+        '5.3 of 8 weeks so far',
+      ),
+      ReadinessCheck('Beats just holding SPY', true, 'Bot +6.4% vs SPY +3.1%'),
+      ReadinessCheck(
+        'Biggest drop under 10%',
+        true,
+        'Biggest drop so far 4.2%',
+      ),
+      ReadinessCheck(
+        'Live trading switched on in the server',
+        true,
+        'AUTOTRADER_LIVE_ENABLED is on',
+      ),
+      ReadinessCheck('Live Alpaca account connected', true, 'Connected'),
+      ReadinessCheck('Live budget cap set (start small)', true, 'Cap \$1,000'),
+    ],
+  );
+
+  @override
   Future<WeeklyReport> weekly(String mode) async => WeeklyReport(
     since: '2026-10-26',
     changePct: mode == 'test' ? 0.021 : 0.008,
@@ -314,7 +344,7 @@ class DemoApi implements TraderApi {
     var p = 50.0 + symbol.codeUnits.fold<int>(0, (a, b) => a + b) % 150;
     final now = DateTime.now();
     final r = Random(symbol.hashCode);
-    return [
+    final raw = [
       for (var i = days; i >= 0; i--)
         () {
           final o = p;
@@ -330,7 +360,24 @@ class DemoApi implements TraderApi {
           );
         }(),
     ];
+    // Line the made-up history up with the demo holding's price.
+    final target = _demoPrices[symbol];
+    if (target == null) return raw;
+    final k = target / raw.last.c;
+    return [
+      for (final b in raw)
+        PriceBar(b.t, b.o * k, b.h * k, b.l * k, b.c * k, b.v),
+    ];
   }
+
+  static const _demoPrices = {
+    'NVDA': 131.92,
+    'JPM': 248.37,
+    'COST': 889.10,
+    'PLTR': 70.84,
+    'XOM': 114.20,
+    'SPY': 683.20,
+  };
 
   @override
   Future<String> ask(String question, String mode) async {

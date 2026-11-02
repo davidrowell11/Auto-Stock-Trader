@@ -330,23 +330,43 @@ class ErrorBox extends StatelessWidget {
 }
 
 /// Centers content and caps its width so the app looks right on phones and desktops alike.
+/// Page layout. One column on phones and tablets; on wide screens, [side]
+/// becomes a second column so desktops use their space.
 class PageFrame extends StatelessWidget {
-  const PageFrame({super.key, required this.children, this.onRefresh});
+  const PageFrame({
+    super.key,
+    required this.children,
+    this.side = const [],
+    this.onRefresh,
+  });
   final List<Widget> children;
+  final List<Widget> side;
   final Future<void> Function()? onRefresh;
+
+  static const wideBreakpoint = 1180.0;
 
   @override
   Widget build(BuildContext context) {
+    final wide =
+        side.isNotEmpty && MediaQuery.sizeOf(context).width >= wideBreakpoint;
+    Widget column(List<Widget> c) =>
+        Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: c);
     final list = ListView(
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
       children: [
         Center(
           child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 760),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: children,
-            ),
+            constraints: BoxConstraints(maxWidth: wide ? 1320 : 760),
+            child: wide
+                ? Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Expanded(flex: 3, child: column(children)),
+                      const SizedBox(width: 20),
+                      Expanded(flex: 2, child: column(side)),
+                    ],
+                  )
+                : column([...children, ...side]),
           ),
         ),
       ],

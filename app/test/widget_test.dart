@@ -30,7 +30,7 @@ void main() {
     final api = DemoApi();
     await api.updateSettings('test', {'budget': 5000.0});
     expect((await api.settings('test')).budget, 5000);
-    expect((await api.settings('live')).budget, 2500);
+    expect((await api.settings('live')).budget, 1000);
   });
 
   test('models parse server JSON', () {

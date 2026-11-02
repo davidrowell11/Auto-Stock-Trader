@@ -18,6 +18,7 @@ try:
 except ImportError:
     TestClient = None
 
+FRACTIONAL = {"AAPL": Asset("AAPL", exchange="NASDAQ", fractionable=True)}
 TOKEN = "t"
 AUTH = {"Authorization": f"Bearer {TOKEN}"}
 
@@ -113,7 +114,7 @@ class ServerFixTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.journal = Journal()
         self.store = SettingsStore(f"{self.tmp.name}/s.json")
-        self.brokers = {m: SimBroker(100_000, {"AAPL": make_bars(uptrend())}) for m in Mode}
+        self.brokers = {m: SimBroker(100_000, {"AAPL": make_bars(uptrend())}, assets=FRACTIONAL) for m in Mode}
         self.runners = {m: BotRunner(m, self.store, self.journal, threading.RLock(),
                                      lambda mode: self.brokers[mode]) for m in Mode}
         self.c = TestClient(create_app(self.runners, self.journal, TOKEN, live_enabled=True))

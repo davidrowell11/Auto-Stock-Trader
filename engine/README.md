@@ -122,4 +122,5 @@ PYTHONPATH=.:tests python -m unittest discover -s tests
 
 * Hedge fund (13F) signals and a stock screener that finds candidates beyond
   the starting list, including penny stocks.
-* Step 4: go live small with a kill switch.
+* Push notifications for trades and alerts (the app's activity feed covers this for now).
+* Strategy lab: test new strategies on paper next to the main bot.

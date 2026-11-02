@@ -40,6 +40,11 @@ class HardLimits:
     penny_min_score: float = 0.75
     analyst_min_confidence: float = 0.60
     penny_analyst_min_confidence: float = 0.75
+    # Going live small (step 4)
+    live_starter_cap: float = 1_000.0  # most real money the bot may use at first
+    live_starter_days: int = 30  # how long the starter cap lasts after Live first starts
+    live_auto_stop_drawdown: float = 0.10  # Live stops itself after losing this much of its money
+    live_auto_stop_errors: int = 3  # ...or after this many failed cycles in a row
     # Things the bot may never do
     allow_otc: bool = False
     allow_options: bool = False

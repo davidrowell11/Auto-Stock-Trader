@@ -86,7 +86,8 @@ class AlpacaBroker(Broker):
     def get_asset(self, symbol: str) -> Asset:
         a = self.trading.get_asset(symbol)
         exchange = getattr(a.exchange, "value", str(a.exchange))
-        return Asset(symbol=a.symbol, exchange=exchange, tradable=bool(a.tradable))
+        return Asset(symbol=a.symbol, exchange=exchange, tradable=bool(a.tradable),
+                     fractionable=bool(getattr(a, "fractionable", False)))
 
     def submit_order(self, order: OrderRequest) -> str:
         from alpaca.trading.enums import OrderSide, TimeInForce

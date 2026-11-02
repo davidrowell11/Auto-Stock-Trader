@@ -21,6 +21,9 @@ class Summary {
     this.invested,
     this.positions,
     this.marketOpen,
+    this.mood,
+    this.moodLevel,
+    this.buyingPaused,
   });
 
   final String mode;
@@ -35,6 +38,9 @@ class Summary {
   final double? equity, cash, todayChange, todayChangePct, invested;
   final int? positions;
   final bool? marketOpen;
+  final String? mood; // market mood note from the last cycle
+  final String? moodLevel; // calm, cautious, risk-off or unknown
+  final String? buyingPaused; // set when Live stopped itself for safety
 
   bool get connected => equity != null;
 
@@ -55,6 +61,51 @@ class Summary {
     invested: _dn(j['invested']),
     positions: (j['positions'] as num?)?.toInt(),
     marketOpen: j['market_open'] as bool?,
+    mood: j['mood'] as String?,
+    moodLevel: j['mood_level'] as String?,
+    buyingPaused: j['buying_paused'] as String?,
+  );
+}
+
+/// Shares, with fractions shown only when there are any (e.g. 12 or 0.277).
+String shares(double q) => q % 1 == 0
+    ? q.toStringAsFixed(0)
+    : q.toStringAsFixed(3).replaceAll(RegExp(r'\.?0+$'), '');
+
+class ReadinessCheck {
+  ReadinessCheck(this.name, this.ok, this.detail);
+  final String name;
+  final bool ok;
+  final String detail;
+}
+
+/// Whether Live may start: Test results goal plus the start-small safety checks.
+class Readiness {
+  Readiness({
+    required this.ready,
+    required this.readyExceptResults,
+    required this.skipAllowed,
+    required this.checks,
+    this.starterCap,
+  });
+
+  final bool ready, readyExceptResults, skipAllowed;
+  final List<ReadinessCheck> checks;
+  final double? starterCap;
+
+  factory Readiness.fromJson(Map<String, dynamic> j) => Readiness(
+    ready: j['ready'] as bool? ?? false,
+    readyExceptResults: j['ready_except_results'] as bool? ?? false,
+    skipAllowed: j['skip_results_allowed'] as bool? ?? false,
+    starterCap: _dn(j['starter_cap']),
+    checks: [
+      for (final c in (j['checks'] as List? ?? []))
+        ReadinessCheck(
+          c['name'] as String,
+          c['ok'] as bool? ?? false,
+          c['detail'] as String? ?? '',
+        ),
+    ],
   );
 }
 

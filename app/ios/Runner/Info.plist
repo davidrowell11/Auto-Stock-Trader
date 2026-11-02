@@ -6,6 +6,8 @@
 	<true/>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
+	<key>NSFaceIDUsageDescription</key>
+	<string>Face ID locks the Live section, which trades real money.</string>
 	<key>CFBundleDisplayName</key>
 	<string>Auto Stock Trader</string>
 	<key>CFBundleExecutable</key>

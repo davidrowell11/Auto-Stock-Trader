@@ -215,6 +215,14 @@ class Journal:
         )
         return [{"ts": ts, "equity": eq} for ts, eq in reversed(cur.fetchall())]
 
+    def daily_equity(self, mode: str) -> list[tuple[str, float]]:
+        """Last recorded account value of each day, oldest first."""
+        cur = self.db.execute(
+            "SELECT substr(ts, 1, 10) AS day, equity FROM equity WHERE rowid IN ("
+            " SELECT MAX(rowid) FROM equity WHERE mode = ? GROUP BY substr(ts, 1, 10))"
+            " ORDER BY day", (mode,))
+        return [(d, float(e)) for d, e in cur.fetchall()]
+
     # ----- equity history (for the drawdown brake) -----
     def record_equity(self, mode: str, equity: float) -> None:
         with self.db:

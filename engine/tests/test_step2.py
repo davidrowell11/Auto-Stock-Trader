@@ -230,10 +230,10 @@ class EngineWithAnalystTests(unittest.TestCase):
 
     def test_penny_stock_needs_analyst(self):
         bars = make_bars(uptrend(start=1.0), volume=5_000_000)
-        broker = SimBroker(100_000, {"PNY": bars})
+        broker = SimBroker(100_000, {"PNY": bars, "SPY": make_bars(uptrend())})  # calm market
         eng = Engine(broker, Settings().clamped(), Journal(),
                      filings_check=lambda s: (True, "ok"), penny_needs_analyst=True)
-        eng.s = Settings(always_watch=("PNY",)).clamped()
+        eng.s = Settings(always_watch=("PNY",), never_buy=("SPY",)).clamped()
         report = eng.run_cycle()
         self.assertEqual(broker.orders, [])
         self.assertTrue(any("analyst" in s for s in report.skipped))
