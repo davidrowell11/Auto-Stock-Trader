@@ -7,7 +7,7 @@ computer's environment variables). Never paste them into chat, the app or code.
 ## Phase 1: Run the bot in Test (fake money)
 
 - [ ] Open a free [Alpaca](https://alpaca.markets) account and create **paper** API keys.
-- [ ] Create a Replit app from this repo and add these Secrets:
+- [ ] Import this repo at [replit.com/import](https://replit.com/import) (GitHub), then add these in the **Secrets** tool:
 
   | Secret | What it is |
   |---|---|
@@ -18,8 +18,8 @@ computer's environment variables). Never paste them into chat, the app or code.
   | `QUIVER_API_TOKEN` | Optional: Congress trades (paid) |
   | `FINNHUB_API_KEY` | Optional: free key for the earnings calendar |
 
-- [ ] Set the run command to `cd engine && pip install -r requirements.txt && python -m autotrader.server`.
-- [ ] Deploy as a **Reserved VM** (always on). Autoscale sleeps when idle and would miss trades.
+- [ ] Press **Run** once to check it starts. The repo's `.replit` file already sets the run command.
+- [ ] Open **Deployments** and choose **Reserved VM** (always on), then **Deploy**. Autoscale sleeps when idle and would miss trades.
 - [ ] Open `https://<your-app>.replit.app/health` and check it says `{"ok": true}`.
 - [ ] In the app, connect with the server address and `AUTOTRADER_APP_TOKEN`.
 - [ ] On the Test tab, set the budget and press **Start bot**.
