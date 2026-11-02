@@ -36,6 +36,7 @@ abstract class TraderApi {
     String mode = 'test',
   });
   Future<String> ask(String question, String mode);
+  Future<Readiness> readiness();
 }
 
 class HttpApi implements TraderApi {
@@ -169,6 +170,10 @@ class HttpApi implements TraderApi {
     ))
       PriceBar.fromJson(j),
   ];
+
+  @override
+  Future<Readiness> readiness() async =>
+      Readiness.fromJson(await _send('GET', '/api/readiness'));
 
   @override
   Future<String> ask(String question, String mode) async =>

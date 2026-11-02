@@ -17,6 +17,7 @@ from .analyst import AnalystUnavailable, AnalystView
 from .broker.base import Broker
 from .config import HARD_LIMITS, Mode, Settings
 from .journal import Journal, StopState
+from .market import MARKET, Mood, market_mood
 from .models import Bar, OrderRequest, Position, Side, Signal
 from .risk import RiskManager
 from .universe import build_universe, sector_of
@@ -33,13 +34,17 @@ class CycleReport:
     queued: list[str] = field(default_factory=list)
     skipped: list[str] = field(default_factory=list)
     halted: str | None = None
+    mood: str | None = None
+    mood_level: str | None = None
 
 
 class Engine:
     def __init__(self, broker: Broker, settings: Settings, journal: Journal,
                  filings_check: penny.FilingsCheck = penny.no_filings_check,
                  signals=None, analyst=None, penny_needs_analyst: bool = True,
-                 keep_going: Callable[[], bool] = lambda: True) -> None:
+                 keep_going: Callable[[], bool] = lambda: True,
+                 earnings: Callable[[str], str | None] | None = None,
+                 pause_buying: str | None = None) -> None:
         self.broker = broker
         self.s = settings
         self.journal = journal
@@ -51,6 +56,11 @@ class Engine:
         # Checked before every order, so Stop or the kill switch takes effect mid-cycle.
         self.keep_going = keep_going
         self.open_orders: set[str] = set()
+        self.assets: dict[str, object] = {}
+        self.earnings = earnings  # e.g. EarningsCalendar.reports_soon
+        self.mood = Mood("calm", 1.0, True, "")
+        # Set when Live stopped itself (e.g. after a big loss): keep protecting holdings, buy nothing.
+        self.pause_buying = pause_buying
 
     @property
     def needs_approval(self) -> bool:
@@ -69,13 +79,18 @@ class Engine:
             p.sector = sector_of(p.symbol)
 
         universe = build_universe(self.s.always_watch, self.s.never_buy)
-        symbols = sorted(set(universe) | {p.symbol for p in positions})
+        symbols = sorted(set(universe) | {p.symbol for p in positions} | {MARKET})
         bars = self.broker.get_daily_bars(symbols, HISTORY_DAYS)
+        self.mood = market_mood(bars.get(MARKET))
+        report.mood = self.mood.note
+        report.mood_level = self.mood.level
 
         kept = self._monitor_positions(positions, bars, report)
 
-        risk = RiskManager(self.s, account, kept, self.journal.peak_equity(self.mode))
-        report.halted = risk.buying_halted()
+        risk = RiskManager(self.s, account, kept, self.journal.peak_equity(self.mode),
+                           mood_multiplier=self.mood.size_multiplier)
+        report.halted = (self.pause_buying or risk.buying_halted()
+                         or (self.mood.note if self.mood.blocks_buying else None))
         if report.halted:
             log.warning("No new buys: %s", report.halted)
             return report
@@ -177,8 +192,10 @@ class Engine:
                 return
             is_penny = penny.is_penny(sig.price, self.s)
             sector = sector_of(sig.symbol)
-            size = risk.size_buy(sig.symbol, sig.price, sector, is_penny)
-            if size.qty < 1:
+            asset = self.assets.get(sig.symbol)
+            fractional = bool(getattr(asset, "fractionable", False)) and not is_penny
+            size = risk.size_buy(sig.symbol, sig.price, sector, is_penny, fractional)
+            if size.qty <= 0:
                 report.skipped.append(f"{sig.symbol}: {size.note}")
                 continue
             reasons = [f"Score {sig.score:.2f}", *sig.reasons, size.note]
@@ -199,9 +216,9 @@ class Engine:
             if self.needs_approval:
                 self.journal.queue_approval(self.mode, sig.symbol, "buy", size.qty, limit, reasons)
                 risk.register_buy(sig.symbol, size.qty, sig.price, sector)
-                report.queued.append(f"{sig.symbol} x{size.qty}")
+                report.queued.append(f"{sig.symbol} x{size.qty:g}")
                 self.journal.add_event(self.mode, "approval",
-                                       f"Wants to buy {size.qty} {sig.symbol} at about ${sig.price:.2f}. Tap to approve.")
+                                       f"Wants to buy {size.qty:g} {sig.symbol} at about ${sig.price:.2f}. Tap to approve.")
                 continue
             if not self.keep_going():
                 report.skipped.append("bot stopped mid-cycle")
@@ -218,8 +235,8 @@ class Engine:
                                       order_id, reasons)
             stop = strategy.initial_stop(sig.price, sig.atr, strategy.stop_multiple(sig.price, self.s))
             self.journal.save_stop(self.mode, sig.symbol, StopState(sig.price, stop, sig.price))
-            report.buys.append(f"{sig.symbol} x{size.qty} @ ${sig.price:.2f}")
-            self.journal.add_event(self.mode, "buy", f"Bought {size.qty} {sig.symbol} at about ${sig.price:.2f}")
+            report.buys.append(f"{sig.symbol} x{size.qty:g} @ ${sig.price:.2f}")
+            self.journal.add_event(self.mode, "buy", f"Bought {size.qty:g} {sig.symbol} at about ${sig.price:.2f}")
             log.info("BUY %s x%s @ %.2f (stop %.2f)", sig.symbol, size.qty, sig.price, stop)
 
     def _analyst_verdict(self, sig: Signal, is_penny: bool,
@@ -255,7 +272,11 @@ class Engine:
 
     def recheck_buy(self, symbol: str) -> tuple[Signal | None, list[str]]:
         """Run the buy rules again for one stock (used when you approve a queued buy)."""
-        history = self.broker.get_daily_bars([symbol], HISTORY_DAYS).get(symbol, [])
+        data = self.broker.get_daily_bars([symbol, MARKET], HISTORY_DAYS)
+        self.mood = market_mood(data.get(MARKET))
+        if self.mood.blocks_buying:
+            return None, [self.mood.note]
+        history = data.get(symbol, [])
         if not history:
             return None, ["no current prices"]
         sig = strategy.score_trend(symbol, history)
@@ -265,13 +286,20 @@ class Engine:
 
     def _buy_problems(self, sig: Signal, history: list[Bar]) -> list[str]:
         asset = self.broker.get_asset(sig.symbol)
+        self.assets[sig.symbol] = asset
         if not asset.tradable:
             return ["not tradable"]
         if asset.is_otc:
             return ["OTC/pink-sheet stocks are never traded"]
         if sig.price < self.s.min_price:
             return [f"price under ${self.s.min_price:.2f}"]
+        if self.earnings is not None:
+            soon = self.earnings(sig.symbol)
+            if soon:
+                return [soon]
         if penny.is_penny(sig.price, self.s):
+            if not self.mood.allow_penny:
+                return ["no penny stocks while the market is weak"]
             if self.analyst is None and self.penny_needs_analyst:
                 return ["penny stocks are only bought with the AI analyst's approval"]
             return penny.penny_buy_problems(asset, history, sig, self.s, self.filings_check)

@@ -26,6 +26,7 @@ class _DashboardState extends State<Dashboard> {
   List<ActivityEvent> events = [];
   List<Approval> approvals = [];
   WeeklyReport? weekly;
+  Readiness? readiness;
   String? error;
   double? budgetDraft;
   Timer? timer;
@@ -73,8 +74,16 @@ class _DashboardState extends State<Dashboard> {
           }
         } catch (_) {}
       }
+      Readiness? ready;
+      if (m == 'live' && !(results[0] as Summary).running) {
+        // Only needed while the Start card shows; it fetches months of SPY prices.
+        try {
+          ready = await api.readiness();
+        } catch (_) {} // older servers don't have it
+      }
       if (!mounted) return;
       setState(() {
+        readiness = ready;
         summary = results[0] as Summary;
         holdings = results[1] as List<Holding>;
         curve = c;
@@ -116,6 +125,8 @@ class _DashboardState extends State<Dashboard> {
     final demo = AppScope.of(context).demo;
     return PageFrame(
       onRefresh: refresh,
+      // Main column; the side column (holdings, activity) follows.
+      // ignore: sort_child_properties_last
       children: [
         if (error != null) ...[
           ErrorBox(error!, onRetry: refresh),
@@ -128,6 +139,10 @@ class _DashboardState extends State<Dashboard> {
           ),
         if (s != null) ...[
           _header(s, demo),
+          if (s.buyingPaused != null) _pausedCard(s.buyingPaused!),
+          if (s.mood != null) _moodLine(s.mood!, s.moodLevel),
+          if (live && !s.running && readiness != null)
+            _readinessCard(readiness!),
           if (live && approvals.isNotEmpty) ...[
             SectionTitle(
               'Waiting for your OK',
@@ -137,6 +152,10 @@ class _DashboardState extends State<Dashboard> {
           ],
           if (!live) _budgetCard(s),
           if (weekly != null) _weeklyCard(weekly!),
+        ],
+      ],
+      side: [
+        if (summary != null) ...[
           SectionTitle(
             'Holdings',
             trailing: Text(
@@ -283,7 +302,7 @@ class _DashboardState extends State<Dashboard> {
                         : (live ? AppColors.live : AppColors.accent),
                     foregroundColor: s.running
                         ? (isDark(context) ? Colors.white : Colors.black87)
-                        : Colors.white,
+                        : AppColors.onColor,
                     padding: const EdgeInsets.symmetric(vertical: 14),
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(14),
@@ -417,7 +436,7 @@ class _DashboardState extends State<Dashboard> {
           Row(
             children: [
               Text(
-                'Buy ${a.qty.toStringAsFixed(0)} ${a.symbol}',
+                'Buy ${shares(a.qty)} ${a.symbol}',
                 style: Theme.of(context).textTheme.titleMedium
                     ?.copyWith(fontWeight: FontWeight.w800),
               ),
@@ -466,6 +485,129 @@ class _DashboardState extends State<Dashboard> {
       ),
     ),
   );
+
+  Widget _pausedCard(String reason) => Padding(
+    padding: const EdgeInsets.only(top: 14),
+    child: GlassCard(
+      glow: AppColors.warn,
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(Icons.shield_outlined, color: AppColors.warn),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              'Safety stop: $reason. No new buys until you press Start. '
+              'Stops on what it holds are still active.',
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
+
+  Widget _moodLine(String mood, String? level) {
+    final calm = level == 'calm';
+    final color = calm ? AppColors.gain : AppColors.warn;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(4, 12, 4, 0),
+      child: Row(
+        children: [
+          Icon(
+            calm ? Icons.wb_sunny_outlined : Icons.cloud_outlined,
+            size: 18,
+            color: color,
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              mood,
+              style: Theme.of(context).textTheme.bodySmall
+                  ?.copyWith(color: AppColors.muted),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _readinessCard(Readiness r) {
+    final t = Theme.of(context).textTheme;
+    return Padding(
+      padding: const EdgeInsets.only(top: 14),
+      child: GlassCard(
+        glow: r.ready ? AppColors.gain : AppColors.live,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(
+                  r.ready ? Icons.verified_outlined : Icons.flag_outlined,
+                  color: r.ready ? AppColors.gain : AppColors.live,
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    r.ready ? 'Ready for real money' : 'Before real money',
+                    style: t.titleMedium?.copyWith(fontWeight: FontWeight.w700),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Text(
+              r.starterCap != null
+                  ? 'Live starts small: at most ${moneyRound.format(r.starterCap)} for the first 30 days.'
+                  : 'The bot proves itself in Test before it trades real money.',
+              style: t.bodySmall?.copyWith(color: AppColors.muted),
+            ),
+            const SizedBox(height: 10),
+            for (final c in r.checks)
+              Semantics(
+                label: '${c.name}: ${c.ok ? 'done' : 'not yet'}. ${c.detail}',
+                excludeSemantics: true,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 5),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Icon(
+                        c.ok
+                            ? Icons.check_circle_rounded
+                            : Icons.radio_button_unchecked_rounded,
+                        size: 20,
+                        color: c.ok ? AppColors.gain : AppColors.muted,
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              c.name,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                            Text(
+                              c.detail,
+                              style: t.bodySmall?.copyWith(
+                                color: AppColors.muted,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
 
   Widget _budgetCard(Summary s) {
     final equity = s.equity ?? 100000;
@@ -598,7 +740,7 @@ class _DashboardState extends State<Dashboard> {
               ),
               const SizedBox(height: 2),
               Text(
-                '${h.qty.toStringAsFixed(h.qty % 1 == 0 ? 0 : 2)} shares · stop ${h.stop == null ? '—' : money.format(h.stop)}',
+                '${shares(h.qty)} ${h.qty == 1 ? 'share' : 'shares'} · stop ${h.stop == null ? '—' : money.format(h.stop)}',
                 style: Theme.of(context).textTheme.bodySmall
                     ?.copyWith(color: AppColors.muted),
               ),

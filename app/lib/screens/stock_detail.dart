@@ -136,7 +136,7 @@ class _StockDetailState extends State<StockDetail> {
           GlassCard(
             child: Column(
               children: [
-                _row('Shares', h.qty.toStringAsFixed(h.qty % 1 == 0 ? 0 : 2)),
+                _row('Shares', shares(h.qty)),
                 _row('Value', money.format(h.value)),
                 _row('Average cost', money.format(h.avgPrice)),
                 _row(
@@ -247,13 +247,18 @@ class _StockDetailState extends State<StockDetail> {
                 sideTitles: SideTitles(
                   showTitles: true,
                   reservedSize: 52,
-                  getTitlesWidget: (v, meta) => SideTitleWidget(
-                    meta: meta,
-                    child: Text(
-                      v.toStringAsFixed(v < 10 ? 2 : 0),
-                      style: TextStyle(fontSize: 10, color: AppColors.muted),
-                    ),
-                  ),
+                  getTitlesWidget: (v, meta) => (v == meta.min || v == meta.max)
+                      ? const SizedBox.shrink()
+                      : SideTitleWidget(
+                          meta: meta,
+                          child: Text(
+                            v.toStringAsFixed(v < 10 ? 2 : 0),
+                            style: TextStyle(
+                              fontSize: 10,
+                              color: AppColors.muted,
+                            ),
+                          ),
+                        ),
                 ),
               ),
             ),
@@ -269,10 +274,10 @@ class _StockDetailState extends State<StockDetail> {
               verticalRangeAnnotations: [
                 for (final m in marks)
                   VerticalRangeAnnotation(
-                    x1: xOf(m.ts) - 0.25,
-                    x2: xOf(m.ts) + 0.25,
+                    x1: xOf(m.ts) - 0.5,
+                    x2: xOf(m.ts) + 0.5,
                     color: (m.isBuy ? AppColors.gain : AppColors.loss)
-                        .withValues(alpha: 0.55),
+                        .withValues(alpha: 0.18),
                   ),
               ],
             ),

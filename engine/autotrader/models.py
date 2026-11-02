@@ -23,6 +23,7 @@ class Asset:
     exchange: str = ""
     tradable: bool = True
     sector: str = "Unknown"
+    fractionable: bool = False  # can be bought in fractions of a share
 
     @property
     def is_otc(self) -> bool:

@@ -10,9 +10,11 @@ except ImportError:  # server extras not installed
 from autotrader.broker.sim import SimBroker
 from autotrader.config import Mode
 from autotrader.journal import Journal
+from autotrader.models import Asset
 
 from helpers import make_bars, uptrend
 
+FRACTIONAL = {"AAPL": Asset("AAPL", exchange="NASDAQ", fractionable=True)}
 TOKEN = "secret-token"
 AUTH = {"Authorization": f"Bearer {TOKEN}"}
 
@@ -26,7 +28,7 @@ class ServerTests(unittest.TestCase):
         self.journal = Journal()
         self.store = SettingsStore(f"{self.tmp.name}/app_settings.json")
         lock = threading.RLock()
-        self.brokers = {m: SimBroker(100_000, {"AAPL": make_bars(uptrend())}) for m in Mode}
+        self.brokers = {m: SimBroker(100_000, {"AAPL": make_bars(uptrend())}, assets=FRACTIONAL) for m in Mode}
         self.runners = {m: BotRunner(m, self.store, self.journal, lock, lambda mode: self.brokers[mode])
                         for m in Mode}
         self.app = create_app(self.runners, self.journal, TOKEN,
@@ -50,7 +52,7 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(r.json()["budget"], 2000)
         self.assertEqual(r.json()["never_buy"], ["GME"])
         self.assertEqual(self.runners[Mode.TEST].settings.budget, 2000)
-        self.assertIsNone(self.runners[Mode.LIVE].settings.budget)  # Test and Live are separate
+        self.assertEqual(self.runners[Mode.LIVE].settings.budget, 1000)  # Live starts small, separate from Test
         self.c.put("/api/test/settings", headers=AUTH, json={"clear_budget": True})
         self.assertIsNone(self.runners[Mode.TEST].settings.budget)
 

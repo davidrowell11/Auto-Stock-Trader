@@ -28,8 +28,9 @@ from pydantic import BaseModel, Field
 
 from . import penny, strategy
 from .broker.base import Broker
-from .config import Mode, Settings, load_settings
+from .config import HARD_LIMITS, Mode, Settings, load_settings
 from .engine import Engine
+from .readiness import live_checks, test_results
 from .journal import Journal, StopState
 from .models import OrderRequest, Side
 from .risk import RiskManager
@@ -61,10 +62,23 @@ class SettingsStore:
             tmp.write_text(json.dumps(self.data, indent=2))
             tmp.replace(self.path)  # atomic, so a crash can't leave a half-written file
 
+    def starter_active(self) -> bool:
+        """True until Live has been running for the starter period."""
+        first = self.get(Mode.LIVE).get("first_started")
+        if not first:
+            return True
+        age = datetime.now(timezone.utc) - datetime.fromisoformat(first)
+        return age < timedelta(days=HARD_LIMITS.live_starter_days)
+
     def settings_for(self, mode: Mode) -> Settings:
         saved = self.get(mode)
         overrides = {k: (tuple(v) if isinstance(v, list) else v)
                      for k, v in saved.items() if k in EDITABLE}
+        if mode is Mode.LIVE and self.starter_active():
+            # Start small: never more than the starter cap of real money, whatever the file says.
+            cap = HARD_LIMITS.live_starter_cap
+            budget = overrides.get("budget")
+            overrides["budget"] = cap if budget is None else min(budget, cap)
         return load_settings(mode=mode, **overrides)
 
 
@@ -85,6 +99,9 @@ class BotRunner:
         self.error: str | None = None
         self.last_cycle: str | None = None
         self.halted: str | None = None
+        self.mood: str | None = None
+        self.mood_level: str | None = None
+        self.failures = 0  # cycles failed in a row
         try:
             self.broker: Broker | None = broker_factory(mode)
         except Exception as exc:  # e.g. Live keys not added yet
@@ -104,14 +121,43 @@ class BotRunner:
 
     def engine(self) -> Engine:
         return Engine(self.broker, self.settings, self.journal,
-                      keep_going=lambda: not self.halted_by_you.is_set(), **self.engine_kwargs)
+                      keep_going=lambda: not self.halted_by_you.is_set(),
+                      pause_buying=self.store.get(self.mode).get("buying_paused"),
+                      **self.engine_kwargs)
+
+    def pause_buying(self, reason: str) -> None:
+        """Automatic safety stop: no new buys until you press Start. Holdings stay protected."""
+        if self.store.get(self.mode).get("buying_paused"):
+            return
+        self.store.update(self.mode, {"buying_paused": reason})
+        self.journal.add_event(self.mode.value, "kill",
+                               f"Safety stop: {reason}. No new buys until you press Start. "
+                               "Stops on your holdings stay active.")
+        log.warning("%s buying paused: %s", self.mode.value, reason)
+
+    def check_live_safety(self, equity: float) -> None:
+        if self.mode is not Mode.LIVE:
+            return
+        capital = self.settings.budget or equity
+        # Peak since you last pressed Start, so resuming after a safety stop starts fresh.
+        saved = self.store.get(self.mode).get("safety_peak")
+        peak = max(saved or equity, equity)
+        if peak != saved:
+            self.store.update(self.mode, {"safety_peak": peak})
+        if capital > 0:
+            lost = (peak - equity) / capital
+            if lost >= HARD_LIMITS.live_auto_stop_drawdown:
+                self.pause_buying(f"Live lost {lost:.0%} of its money from its peak")
 
     def run_once(self) -> None:
         if self.broker is None:
             return
         with self.lock:
             report = self.engine().run_cycle()
+            self.check_live_safety(self.broker.get_account().equity)
         self.halted = report.halted
+        self.mood = report.mood
+        self.mood_level = report.mood_level
         self.last_cycle = datetime.now(timezone.utc).isoformat(timespec="seconds")
 
     def loop(self) -> None:
@@ -120,9 +166,13 @@ class BotRunner:
                 if self.running and self.broker is not None and self.broker.is_market_open():
                     self.run_once()
                     self.error = None
+                    self.failures = 0
             except Exception as exc:  # keep the thread alive; show the problem in the app
                 log.exception("%s cycle failed", self.mode.value)
                 self.error = str(exc)
+                self.failures += 1
+                if self.mode is Mode.LIVE and self.failures >= HARD_LIMITS.live_auto_stop_errors:
+                    self.pause_buying(f"{self.failures} cycles failed in a row ({exc})")
             self._stop.wait(self.settings.poll_seconds)
 
     def start_thread(self) -> None:
@@ -149,6 +199,9 @@ class BotRunner:
             raise HTTPException(409, f"Already {a['status']}")
         if self.broker is None:
             raise HTTPException(503, self.error or "Broker not connected")
+        paused = self.store.get(self.mode).get("buying_paused")
+        if paused:
+            raise HTTPException(409, f"Buying is paused by the safety stop ({paused}). Press Start first.")
         queued = datetime.fromisoformat(a["ts"])
         if datetime.now(timezone.utc) - queued > self.APPROVAL_MAX_AGE:
             self.journal.set_approval_status(approval_id, "expired")
@@ -166,10 +219,15 @@ class BotRunner:
         price = sig.price
         s = engine.s
         is_penny = penny.is_penny(price, s)
-        risk = RiskManager(s, account, positions, self.journal.peak_equity(self.mode.value))
-        size = risk.size_buy(a["symbol"], price, sector_of(a["symbol"]), is_penny)
-        qty = min(int(a["qty"]), size.qty)  # re-checked: prices and the account may have moved
-        if qty < 1:
+        risk = RiskManager(s, account, positions, self.journal.peak_equity(self.mode.value),
+                           mood_multiplier=engine.mood.size_multiplier)
+        asset = engine.assets.get(a["symbol"])
+        fractional = bool(getattr(asset, "fractionable", False)) and not is_penny
+        size = risk.size_buy(a["symbol"], price, sector_of(a["symbol"]), is_penny, fractional)
+        qty = min(float(a["qty"]), size.qty)  # re-checked: prices and the account may have moved
+        if not fractional:
+            qty = float(int(qty))
+        if qty <= 0:
             self.journal.set_approval_status(approval_id, "expired")
             raise HTTPException(409, f"Can't buy now: {size.note}")
         limit = penny.limit_price_for_buy(price) if is_penny else None
@@ -179,7 +237,7 @@ class BotRunner:
         stop = strategy.initial_stop(price, sig.atr, strategy.stop_multiple(price, s))
         self.journal.save_stop(self.mode.value, a["symbol"], StopState(price, stop, price))
         self.journal.set_approval_status(approval_id, "approved")
-        self.journal.add_event(self.mode.value, "buy", f"Bought {qty} {a['symbol']} at about ${price:.2f} (you approved)")
+        self.journal.add_event(self.mode.value, "buy", f"Bought {qty:g} {a['symbol']} at about ${price:.2f} (you approved)")
         return {"bought": qty, "price": price, "stop": round(stop, 2)}
 
     def reject(self, approval_id: int) -> None:
@@ -252,7 +310,7 @@ class AskRequest(BaseModel):
 
 def create_app(runners: dict[Mode, BotRunner], journal: Journal, token: str,
                ask_fn: Callable[[str, dict], str] | None = None,
-               live_enabled: bool = False) -> FastAPI:
+               live_enabled: bool = False, skip_results: bool = False) -> FastAPI:
     if not token:
         raise RuntimeError("Set AUTOTRADER_APP_TOKEN before starting the server")
     app = FastAPI(title="Auto Stock Trader")
@@ -288,6 +346,7 @@ def create_app(runners: dict[Mode, BotRunner], journal: Journal, token: str,
         out = {
             "mode": r.mode.value, "running": r.running, "error": r.error, "halted": r.halted,
             "last_cycle": r.last_cycle, "budget": s.budget, "approve_mode": s.approve_mode,
+            "mood": r.mood, "mood_level": r.mood_level, "buying_paused": r.store.get(r.mode).get("buying_paused"),
             "live_enabled": live_enabled,
             "pending_approvals": len(journal.pending_approvals(r.mode.value)),
         }
@@ -367,6 +426,11 @@ def create_app(runners: dict[Mode, BotRunner], journal: Journal, token: str,
     def put_settings(mode: str, body: SettingsUpdate):
         r = runner(mode)
         changes = {}
+        if r.mode is Mode.LIVE and r.store.starter_active():
+            cap = HARD_LIMITS.live_starter_cap
+            if body.clear_budget or (body.budget is not None and body.budget > cap):
+                raise HTTPException(400, f"For the first {HARD_LIMITS.live_starter_days} days of Live, "
+                                         f"the cap can't be over ${cap:,.0f}")
         if body.clear_budget:
             changes["budget"] = None
         elif body.budget is not None:
@@ -381,14 +445,48 @@ def create_app(runners: dict[Mode, BotRunner], journal: Journal, token: str,
         journal.add_event(r.mode.value, "settings", f"Settings changed: {', '.join(changes) or 'nothing'}")
         return get_settings(mode)
 
+    def readiness_report() -> dict:
+        test, live = runners[Mode.TEST], runners[Mode.LIVE]
+        daily = journal.daily_equity(Mode.TEST.value)
+        spy: list[tuple[str, float]] = []
+        if daily and test.broker is not None:
+            days = (datetime.now(timezone.utc).date()
+                    - datetime.fromisoformat(daily[0][0]).date()).days + 10
+            try:
+                bars_ = test.broker.get_daily_bars(["SPY"], max(days, 5)).get("SPY", [])
+                spy = [(b.time.date().isoformat(), b.close) for b in bars_]
+            except Exception as exc:
+                log.warning("Couldn't fetch SPY for readiness: %s", exc)
+        results = test_results(daily, test.settings.budget, spy)
+        report = live_checks(results, live_enabled=live_enabled, live_connected=live.broker is not None,
+                             live_cap=live.settings.budget, starter_active=live.store.starter_active())
+        report["skip_results_allowed"] = skip_results
+        return report
+
+    @app.get("/api/readiness", **secured)
+    def readiness():
+        return readiness_report()
+
     @app.post("/api/{mode}/start", **secured)
     def start(mode: str):
         r = runner(mode)
-        if r.mode is Mode.LIVE and not live_enabled:
-            raise HTTPException(403, "Live trading is off on the server (AUTOTRADER_LIVE_ENABLED)")
+        if r.mode is Mode.LIVE:
+            if not live_enabled:
+                raise HTTPException(403, "Live trading is off on the server (AUTOTRADER_LIVE_ENABLED)")
+            rep_ = readiness_report()
+            allowed = rep_["ready"] or (skip_results and rep_["ready_except_results"])
+            if not allowed:
+                missing = [c["name"] for c in rep_["checks"] if not c["ok"]]
+                raise HTTPException(403, "Not ready for real money yet: " + "; ".join(missing))
+            if not rep_["ready"]:
+                journal.add_event("live", "settings",
+                                  "Started before the Test results goal was met (skipped by the server owner)")
         broker_of(r)
+        if r.mode is Mode.LIVE and not r.store.get(Mode.LIVE).get("first_started"):
+            r.store.update(Mode.LIVE, {"first_started": datetime.now(timezone.utc).isoformat()})
         r.halted_by_you.clear()
-        r.store.update(r.mode, {"running": True})
+        r.failures = 0
+        r.store.update(r.mode, {"running": True, "buying_paused": None, "safety_peak": None})
         journal.add_event(r.mode.value, "start", "Bot started")
         return {"running": True}
 
@@ -450,7 +548,7 @@ def main() -> None:
     import uvicorn
 
     from .broker.alpaca_broker import AlpacaBroker
-    from .signals import QuiverClient, SecClient, SignalBook
+    from .signals import EarningsCalendar, QuiverClient, SecClient, SignalBook
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     token = os.environ.get("AUTOTRADER_APP_TOKEN", "")
@@ -470,6 +568,8 @@ def main() -> None:
         ask_fn = lambda q, ctx: ask(client, q, ctx)  # noqa: E731
 
     sec = SecClient()
+    earnings = EarningsCalendar()
+    skip_results = os.environ.get("AUTOTRADER_SKIP_READINESS", "").lower() == "true"
     runners = {}
     for mode in (Mode.TEST, Mode.LIVE):
         r = BotRunner(mode, store, journal, threading.RLock(), AlpacaBroker,
@@ -479,13 +579,14 @@ def main() -> None:
             "filings_check": sec.penny_filings_check,
             "signals": SignalBook(sec=sec, quiver=QuiverClient(), bars_fetch=bars_fetch),
             "analyst": analyst,
+            "earnings": earnings.reports_soon,
         }
         if mode is Mode.LIVE and not live_enabled:
             store.update(mode, {"running": False})
         r.start_thread()
         runners[mode] = r
 
-    app = create_app(runners, journal, token, ask_fn, live_enabled)
+    app = create_app(runners, journal, token, ask_fn, live_enabled, skip_results)
     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", "8000")))
 
 
