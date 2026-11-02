@@ -1,0 +1,101 @@
+# Builds the app for Mac, Windows and Android, so you can download it
+# instead of installing Xcode, Visual Studio or Android Studio yourself.
+# Pull requests just check that the builds work. Each push to main that
+# changes the app publishes them on the "App downloads" release.
+name: build-apps
+on:
+  pull_request:
+    paths: ["app/**", ".github/workflows/build-apps.yml"]
+  push:
+    branches: [main]
+    paths: ["app/**", ".github/workflows/build-apps.yml"]
+  workflow_dispatch:
+
+env:
+  FLUTTER_VERSION: "3.47.9"
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - name: Build
+        working-directory: app
+        run: flutter build macos --release
+      - name: Zip
+        run: |
+          cd app/build/macos/Build/Products/Release
+          ditto -c -k --keepParent auto_stock_trader.app "$GITHUB_WORKSPACE/AutoStockTrader-mac.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mac
+          path: AutoStockTrader-mac.zip
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - name: Build
+        working-directory: app
+        run: flutter build windows --release
+      - name: Zip
+        shell: pwsh
+        run: Compress-Archive -Path app/build/windows/x64/runner/Release/* -DestinationPath AutoStockTrader-windows.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: AutoStockTrader-windows.zip
+
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - name: Build
+        working-directory: app
+        run: flutter build apk --release
+      - name: Rename
+        run: cp app/build/app/outputs/flutter-apk/app-release.apk AutoStockTrader-android.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android
+          path: AutoStockTrader-android.apk
+
+  publish:
+    if: github.event_name != 'pull_request'
+    needs: [macos, windows, android]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - name: Update the "App downloads" release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if ! gh release view app-latest >/dev/null 2>&1; then
+            gh release create app-latest --title "App downloads" --target "$GITHUB_SHA" \
+              --notes "The latest app for Mac, Windows and Android. See docs/INSTALL_APP.md for how to open each one."
+          fi
+          gh release upload app-latest AutoStockTrader-mac.zip AutoStockTrader-windows.zip AutoStockTrader-android.apk --clobber
