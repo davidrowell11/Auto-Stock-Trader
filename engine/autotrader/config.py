@@ -84,6 +84,9 @@ class Settings:
     max_signal_lookups: int = 10  # stocks per cycle checked for insider/Congress buying
     # Live trades wait for a one-tap approval until this is switched off.
     approve_mode: bool = True
+    # New buys in pre-market (4am-9:30am) and after hours (4pm-8pm). Selling to protect
+    # holdings happens in those hours either way. On for Test, off for Live until switched on.
+    after_hours_buys: bool = False
     always_watch: tuple[str, ...] = ()
     never_buy: tuple[str, ...] = ()
     poll_seconds: int = 300

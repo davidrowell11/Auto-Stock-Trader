@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 
 from . import penny, strategy
@@ -28,6 +28,22 @@ log = logging.getLogger("autotrader")
 HISTORY_DAYS = strategy.MIN_HISTORY + 10
 APPROVAL_MAX_AGE = timedelta(hours=24)
 DUST = 1e-6  # share counts below this are treated as zero
+
+
+EXTENDED_SESSIONS = {"pre", "after"}  # 4am-9:30am and 4pm-8pm New York time
+EXTENDED_BUY_CUSHION = 0.005  # outside regular hours, pay at most 0.5% over the last trade
+EXTENDED_SELL_CUSHION = 0.02  # ...and accept down to 2% under it to get out
+
+
+def limit_for(side: Side, price: float, extended: bool, is_penny: bool) -> float | None:
+    """The limit price for an order, or None for a market order (regular hours, not a penny stock)."""
+    if side is Side.SELL and (extended or is_penny):
+        return round(price * (1 - EXTENDED_SELL_CUSHION), 4 if price < 1 else 2)
+    if side is Side.BUY and is_penny:
+        return penny.limit_price_for_buy(price)
+    if side is Side.BUY and extended:
+        return round(price * (1 + EXTENDED_BUY_CUSHION), 4 if price < 1 else 2)
+    return None
 
 
 def bot_positions(broker: Broker, journal: Journal, mode: str) -> list[Position]:
@@ -88,7 +104,8 @@ class Engine:
                  keep_going: Callable[[], bool] = lambda: True,
                  earnings: Callable[[str], str | None] | None = None,
                  pause_buying: str | None = None,
-                 progress: Callable[[str], None] = lambda step: None) -> None:
+                 progress: Callable[[str], None] = lambda step: None,
+                 session: str = "regular") -> None:
         self.broker = broker
         self.s = settings
         self.journal = journal
@@ -108,6 +125,12 @@ class Engine:
         self.pause_buying = pause_buying
         # Plain-English steps for the app's "What the bot is doing" section.
         self.progress = progress
+        # "regular", or "pre"/"after" for pre-market and after-hours trading (limit orders only).
+        self.session = session
+
+    @property
+    def extended(self) -> bool:
+        return self.session in EXTENDED_SESSIONS
 
     @property
     def needs_approval(self) -> bool:
@@ -147,12 +170,25 @@ class Engine:
             self.journal.save_stop(self.mode, symbol, state)
         return state
 
-    def sync_holdings(self) -> tuple[list[Position], set[str]]:
-        """The bot's holdings after settling its orders, and the stocks it still has an order working for."""
+    def sync_holdings(self, reprice: bool = False) -> tuple[list[Position], set[str]]:
+        """The bot's holdings after settling its orders, and the stocks it still has an order working for.
+
+        With reprice, a sell still unfilled since the last check (and, outside regular hours, an
+        unfilled buy) is cancelled so this check can place it again at today's price. A stale limit
+        order would otherwise sit below the market while a stock keeps falling.
+        """
         held = {p.symbol: p.qty for p in self.broker.get_positions()}
         working = set()
         for symbol in sorted(self.journal.owned_symbols(self.mode)):
             state = self.settle(symbol, held.get(symbol))
+            if (reprice and state is not None and state.order_id
+                    and (state.order_side == "sell" or self.extended)):
+                try:
+                    self.broker.cancel_order(state.order_id)
+                    self.progress(f"Re-pricing the unfilled {state.order_side} order for {symbol}")
+                except Exception as exc:  # e.g. it filled a moment ago
+                    log.info("Couldn't cancel the %s order for %s: %s", state.order_side, symbol, exc)
+                state = self.settle(symbol, held.get(symbol))
             if state is not None and state.order_id:
                 working.add(symbol)
         return bot_positions(self.broker, self.journal, self.mode), working
@@ -172,10 +208,15 @@ class Engine:
         self.progress("Checking the account")
         account = self.broker.get_account()
         self.journal.record_equity(self.mode, account.equity)
-        # Anyone's unfilled orders: the bot won't open a new trade in those stocks.
-        self.open_orders = self.broker.open_order_symbols()
         # The bot only manages stocks it bought itself; anything else in the account is yours.
-        positions, self.working = self.sync_holdings()
+        positions, self.working = self.sync_holdings(reprice=True)
+        # Anyone's unfilled orders (after re-pricing the bot's): no new trade in those stocks.
+        self.open_orders = self.broker.open_order_symbols()
+        if self.extended and positions:
+            # Outside regular hours the position's price can lag; use the latest trade.
+            latest = self.broker.latest_prices(p.symbol for p in positions)
+            positions = [replace(p, current_price=latest.get(p.symbol, p.current_price))
+                         for p in positions]
         self.progress(f"Watching {len(positions)} stock{'' if len(positions) == 1 else 's'} it owns"
                       if positions else "It doesn't own any stocks yet")
 
@@ -196,9 +237,11 @@ class Engine:
                            mood_multiplier=self.mood.size_multiplier)
         report.halted = (self.pause_buying or risk.buying_halted()
                          or (self.mood.note if self.mood.blocks_buying else None))
+        if not report.halted and self.extended and not self.s.after_hours_buys:
+            report.halted = "new buys wait for regular hours"
         if report.halted:
             log.warning("No new buys: %s", report.halted)
-            self.progress(f"Not buying today: {report.halted}")
+            self.progress(f"Not buying right now: {report.halted}")
             return report
         self._scan_for_buys(universe, bars, risk, report)
         return report
@@ -240,10 +283,9 @@ class Engine:
 
     def _sell(self, p: Position, reason: str, report: CycleReport) -> bool:
         # Protective sells never wait for approval: getting out fast is the point.
-        limit = None
-        if penny.is_penny(p.current_price, self.s):
-            limit = round(p.current_price * 0.98, 4 if p.current_price < 1 else 2)
-        order = OrderRequest(p.symbol, Side.SELL, p.qty, limit, reason)
+        limit = limit_for(Side.SELL, p.current_price, self.extended,
+                          penny.is_penny(p.current_price, self.s))
+        order = OrderRequest(p.symbol, Side.SELL, p.qty, limit, reason, self.extended)
         if not self.keep_going():
             return False
         self.progress(f"Selling {p.symbol}: {reason}")
@@ -305,15 +347,25 @@ class Engine:
                     sig.reasons.extend(expert.reasons)
             candidates.sort(key=lambda c: c.score, reverse=True)
 
+        if self.extended and candidates:
+            # Daily prices are from the last close; size and price after-hours buys on the latest trade.
+            latest = self.broker.latest_prices(c.symbol for c in candidates)
+            candidates = [replace(c, price=latest[c.symbol]) for c in candidates if c.symbol in latest]
+
         reviews = 0
         for sig in candidates:
             if not self.keep_going():
                 report.skipped.append("bot stopped mid-cycle")
                 return
             is_penny = penny.is_penny(sig.price, self.s)
+            if is_penny and self.extended:
+                report.skipped.append(f"{sig.symbol}: penny stocks are only bought in regular hours")
+                continue
             sector = sector_of(sig.symbol)
             asset = self.assets.get(sig.symbol)
-            fractional = bool(getattr(asset, "fractionable", False)) and not is_penny
+            # Whole shares outside regular hours, where fractional orders aren't always accepted.
+            fractional = (bool(getattr(asset, "fractionable", False)) and not is_penny
+                          and not self.extended)
             size = risk.size_buy(sig.symbol, sig.price, sector, is_penny, fractional)
             if size.qty <= 0:
                 report.skipped.append(f"{sig.symbol}: {size.note}")
@@ -334,7 +386,7 @@ class Engine:
                     continue
                 if verdict is not None:
                     reasons.append(f"Analyst ({verdict.confidence:.0%} confident): {verdict.reasoning}")
-            limit = penny.limit_price_for_buy(sig.price) if is_penny else None
+            limit = limit_for(Side.BUY, sig.price, self.extended, is_penny)
             if self.needs_approval:
                 self.journal.queue_approval(self.mode, sig.symbol, "buy", size.qty, limit, reasons)
                 risk.register_buy(sig.symbol, size.qty, sig.price, sector)
@@ -349,7 +401,7 @@ class Engine:
             self.progress(f"Buying {size.qty:g} {sig.symbol} at about ${sig.price:,.2f}")
             try:
                 order_id = self.broker.submit_order(
-                    OrderRequest(sig.symbol, Side.BUY, size.qty, limit, reasons[0]))
+                    OrderRequest(sig.symbol, Side.BUY, size.qty, limit, reasons[0], self.extended))
             except Exception as exc:
                 log.error("Buy %s failed: %s", sig.symbol, exc)
                 report.skipped.append(f"{sig.symbol}: buy failed ({exc})")
@@ -415,6 +467,8 @@ class Engine:
             return ["not tradable"]
         if asset.is_otc:
             return ["OTC/pink-sheet stocks are never traded"]
+        if self.extended and penny.is_penny(sig.price, self.s):
+            return ["penny stocks are only bought in regular hours"]
         sold = self.journal.last_protective_sell(self.mode, sig.symbol)
         cooloff = timedelta(days=HARD_LIMITS.stop_out_cooloff_days)
         if sold is not None and datetime.now(timezone.utc) - sold < cooloff:

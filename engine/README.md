@@ -3,7 +3,22 @@
 The bot that does the trading. Test (fake money) and Live (real money) run
 the same code; only the Alpaca account differs.
 
-## What it does each cycle (every 5 minutes while the market is open)
+## When it trades
+
+Every 5 minutes from 4am to 8pm New York time on trading days (Alpaca's
+calendar, so holidays and early closes are handled).
+
+- **Regular hours (9:30am to 4pm):** everything below.
+- **Pre-market (4am to 9:30am) and after hours (4pm to 8pm):** limit orders
+  only, using the latest trade price. It always watches what it owns and
+  sells when a safety stop hits (accepting up to 2% under the last trade).
+  New buys happen only if "buy before and after hours" is on (default: on
+  for Test, off for Live). They are whole shares, pay at most 0.5% over the
+  last trade, and never penny stocks.
+- An order still unfilled at the next check is cancelled and placed again
+  at the new price, so a pre-market sell can't sit below a falling market.
+
+## What it does each cycle
 
 1. **Watches what it owns.** Moves each trailing stop up as the price rises,
    and sells when the stop is hit, the trend breaks (close below the 50-day

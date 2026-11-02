@@ -229,7 +229,13 @@ class _DashboardState extends State<Dashboard> {
           )
         : s.running
         ? (
-            s.marketOpen == false ? 'Running · market closed' : 'Running',
+            switch (s.session) {
+              'pre' => 'Running · pre-market',
+              'after' => 'Running · after hours',
+              'closed' => 'Running · market closed',
+              _ =>
+                s.marketOpen == false ? 'Running · market closed' : 'Running',
+            },
             AppColors.gain,
             Icons.bolt_rounded,
           )
