@@ -1,0 +1,13 @@
+# Replit setup for the trading bot server (engine/). The Flutter app is not run here.
+modules = ["python-3.12"]
+run = "cd engine && pip install -q -r requirements.txt && python -m autotrader.server"
+
+[deployment]
+# Reserved VM ("gce") stays on all the time. Autoscale would sleep and miss trades.
+deploymentTarget = "gce"
+build = ["sh", "-c", "cd engine && pip install -r requirements.txt"]
+run = ["sh", "-c", "cd engine && python -m autotrader.server"]
+
+[[ports]]
+localPort = 8000
+externalPort = 80
