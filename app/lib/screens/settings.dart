@@ -149,7 +149,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 const SizedBox(height: 6),
                 Text(
                   'These are capped by hard limits in the bot that nothing can loosen.',
-                  style: t.bodySmall?.copyWith(color: Colors.grey),
+                  style: t.bodySmall?.copyWith(color: AppColors.muted),
                 ),
               ],
             ),
@@ -249,8 +249,23 @@ class _SettingsScreenState extends State<SettingsScreen> {
       ),
     );
     if (result == null) return;
-    final v = double.tryParse(result.replaceAll(',', '').trim());
-    await save('live', v == null ? {'clear_budget': true} : {'budget': v});
+    final text = result.trim();
+    if (text.isEmpty) {
+      await save('live', {'clear_budget': true});
+      return;
+    }
+    final v = parseMoney(text);
+    if (v == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('"$text" isn\'t an amount. The cap was not changed.'),
+          ),
+        );
+      }
+      return;
+    }
+    await save('live', {'budget': v});
   }
 
   Widget _listEditor(
@@ -274,7 +289,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         Text(
           hint,
           style: Theme.of(context).textTheme.bodySmall
-              ?.copyWith(color: Colors.grey),
+              ?.copyWith(color: AppColors.muted),
         ),
         const SizedBox(height: 10),
         Wrap(
@@ -305,4 +320,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
       ],
     );
   }
+}
+
+/// Reads amounts like "5000", "\$5,000", "5 000" or "5k". Null if it isn't one.
+double? parseMoney(String text) {
+  var t = text.toLowerCase().replaceAll(RegExp(r'[\s,\$]'), '');
+  var scale = 1.0;
+  if (t.endsWith('k')) {
+    scale = 1000;
+    t = t.substring(0, t.length - 1);
+  }
+  final v = double.tryParse(t);
+  if (v == null || v < 0 || v.isNaN || v.isInfinite) return null;
+  return v * scale;
 }

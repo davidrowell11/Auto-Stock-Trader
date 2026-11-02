@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:local_auth/local_auth.dart';
 
@@ -20,6 +21,7 @@ class TraderApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final app = AppScope.of(context);
+    AppColors.dark = app.themeMode == ThemeMode.dark;
     return MaterialApp(
       title: 'Auto Stock Trader',
       debugShowCheckedModeBanner: false,
@@ -78,7 +80,7 @@ class _HomeShellState extends State<HomeShell> {
               selectedIndex: index,
               onDestinationSelected: (i) => setState(() => index = i),
               labelType: NavigationRailLabelType.all,
-              leading: const Padding(
+              leading: Padding(
                 padding: EdgeInsets.symmetric(vertical: 18),
                 child: Icon(
                   Icons.show_chart_rounded,
@@ -142,10 +144,39 @@ class _LiveLockState extends State<LiveLock> {
   Future<void> unlock() async {
     final app = AppScope.of(context);
     if (app.liveUnlocked) return;
+    if (kIsWeb) {
+      // Browsers have no Face ID API, so the web preview asks for a deliberate tap instead.
+      final ok = await showDialog<bool>(
+        context: context,
+        builder: (c) => AlertDialog(
+          title: const Text('Open Live?'),
+          content: const Text(
+            'Live trades real money. The phone and desktop apps lock this '
+            'with Face ID, fingerprint or your passcode.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(c, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(c, true),
+              child: const Text('Open Live'),
+            ),
+          ],
+        ),
+      );
+      if (ok == true) app.unlockLive();
+      return;
+    }
     try {
       final supported = await auth.isDeviceSupported();
       if (!supported) {
-        app.unlockLive();
+        if (mounted) {
+          setState(
+            () => message = 'Set a passcode, Face ID or fingerprint on this device to use Live.',
+          );
+        }
         return;
       }
       final ok = await auth.authenticate(
@@ -154,11 +185,15 @@ class _LiveLockState extends State<LiveLock> {
       if (ok) {
         app.unlockLive();
       } else if (mounted) {
-        setState(() => message = 'Not unlocked');
+        setState(() => message = 'Not unlocked. Tap Unlock to try again.');
       }
     } catch (e) {
-      // Platforms without a lock screen API (e.g. the web preview) fall through.
-      app.unlockLive();
+      // Locked out, not enrolled, etc. Stay locked: this is real money.
+      if (mounted) {
+        setState(
+          () => message = 'Couldn\'t check your identity. Try again, or unlock your device first.',
+        );
+      }
     }
   }
 
@@ -171,7 +206,7 @@ class _LiveLockState extends State<LiveLock> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(Icons.lock_rounded, size: 42, color: AppColors.live),
+            Icon(Icons.lock_rounded, size: 42, color: AppColors.live),
             const SizedBox(height: 12),
             const Text(
               'Live uses real money',

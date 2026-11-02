@@ -71,7 +71,7 @@ class _ConnectScreenState extends State<ConnectScreen> {
                         height: 64,
                         alignment: Alignment.center,
                         decoration: BoxDecoration(
-                          gradient: const LinearGradient(
+                          gradient: LinearGradient(
                             colors: [AppColors.accent, AppColors.gain],
                           ),
                           borderRadius: BorderRadius.circular(20),
@@ -93,7 +93,7 @@ class _ConnectScreenState extends State<ConnectScreen> {
                     const SizedBox(height: 6),
                     Text(
                       'Connect to your bot server to see your Test and Live trading.',
-                      style: t.bodyMedium?.copyWith(color: Colors.grey),
+                      style: t.bodyMedium?.copyWith(color: AppColors.muted),
                     ),
                     const SizedBox(height: 26),
                     GlassCard(
@@ -122,7 +122,7 @@ class _ConnectScreenState extends State<ConnectScreen> {
                             const SizedBox(height: 12),
                             Text(
                               error!,
-                              style: const TextStyle(color: AppColors.loss),
+                              style: TextStyle(color: AppColors.loss),
                             ),
                           ],
                           const SizedBox(height: 18),

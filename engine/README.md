@@ -89,6 +89,12 @@ happened and the signal feeds aren't point-in-time; they're judged going
 forward through the scorecard instead. The default stock list is today's
 large companies, so results are flattered by survivorship bias.
 
+## Your own stocks are safe
+
+The bot only manages stocks it bought itself (the ones it keeps a stop for).
+Anything else in the same Alpaca account is left alone, including by the kill
+switch. Unfilled orders are tracked so the bot never places the same order twice.
+
 ## App server
 
 The app talks to the bot through a small web server:

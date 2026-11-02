@@ -34,7 +34,11 @@ class _StockDetailState extends State<StockDetail> {
   Future<void> load() async {
     final api = AppScope.of(context).api!;
     try {
-      final b = await api.bars(widget.holding.symbol, days: days);
+      final b = await api.bars(
+        widget.holding.symbol,
+        days: days,
+        mode: widget.mode,
+      );
       final t = (await api.trades(widget.mode))
           .where((x) => x.symbol == widget.holding.symbol)
           .toList();
@@ -81,7 +85,7 @@ class _StockDetailState extends State<StockDetail> {
                 const SizedBox(height: 4),
                 Text(
                   'since the bot bought at ${money.format(h.avgPrice)}',
-                  style: t.bodySmall?.copyWith(color: Colors.grey),
+                  style: t.bodySmall?.copyWith(color: AppColors.muted),
                 ),
                 const SizedBox(height: 16),
                 SegmentedButton<int>(
@@ -99,8 +103,16 @@ class _StockDetailState extends State<StockDetail> {
                 ),
                 const SizedBox(height: 14),
                 if (error != null)
-                  Text(error!, style: const TextStyle(color: AppColors.loss)),
-                if (bars.length > 1) SizedBox(height: 260, child: _candles()),
+                  Text(error!, style: TextStyle(color: AppColors.loss)),
+                if (bars.length > 1)
+                  Semantics(
+                    label:
+                        '${widget.holding.symbol} price chart, last $days days: '
+                        '\$${bars.first.c.toStringAsFixed(2)} to '
+                        '\$${bars.last.c.toStringAsFixed(2)}',
+                    excludeSemantics: true,
+                    child: SizedBox(height: 260, child: _candles()),
+                  ),
                 if (bars.length <= 1 && error == null)
                   const SizedBox(
                     height: 260,
@@ -191,7 +203,7 @@ class _StockDetailState extends State<StockDetail> {
     child: Row(
       children: [
         Expanded(
-          child: Text(k, style: const TextStyle(color: Colors.grey)),
+          child: Text(k, style: TextStyle(color: AppColors.muted)),
         ),
         Text(v, style: const TextStyle(fontWeight: FontWeight.w700)),
       ],
@@ -239,7 +251,7 @@ class _StockDetailState extends State<StockDetail> {
                     meta: meta,
                     child: Text(
                       v.toStringAsFixed(v < 10 ? 2 : 0),
-                      style: const TextStyle(fontSize: 10, color: Colors.grey),
+                      style: TextStyle(fontSize: 10, color: AppColors.muted),
                     ),
                   ),
                 ),
