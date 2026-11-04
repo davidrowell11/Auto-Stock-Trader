@@ -21,12 +21,13 @@ import logging
 import os
 import threading
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from . import penny, strategy
@@ -527,7 +528,8 @@ class AskRequest(BaseModel):
 def create_app(runners: dict[Mode, BotRunner], journal: Journal, token: str,
                ask_fn: Callable[[str, dict], str] | None = None,
                live_enabled: bool = False, skip_results: bool = False,
-               learner: Learner | None = None, spend=None) -> FastAPI:
+               learner: Learner | None = None, spend=None,
+               ask_stream_fn: Callable[[str, dict], Iterable[str]] | None = None) -> FastAPI:
     if not token:
         raise RuntimeError("Set AUTOTRADER_APP_TOKEN before starting the server")
     learner = learner or Learner(journal)
@@ -857,19 +859,46 @@ def create_app(runners: dict[Mode, BotRunner], journal: Journal, token: str,
             for b in data.get(symbol.upper(), [])
         ]
 
-    @app.post("/api/ask", **secured)
-    def ask(body: AskRequest):
+    def ask_context(mode: str) -> dict:
         if ask_fn is None:
             raise HTTPException(503, "The AI analyst is off (add ANTHROPIC_API_KEY on the server)")
-        r = runner(body.mode)
-        context = {"summary": summary(body.mode), "recent_trades": trades(body.mode)[:20]}
+        r = runner(mode)
+        context = {"summary": summary(mode), "recent_trades": trades(mode)[:20]}
         if r.broker is not None:
-            context["positions"] = positions(body.mode)
+            context["positions"] = positions(mode)
+        return context
+
+    @app.post("/api/ask", **secured)
+    def ask(body: AskRequest):
+        context = ask_context(body.mode)
         from .analyst import AnalystUnavailable
         try:
             return {"answer": ask_fn(body.question, context)}
         except AnalystUnavailable as exc:
             raise HTTPException(503, str(exc)) from exc
+
+    @app.post("/api/ask/stream", **secured)
+    def ask_streamed(body: AskRequest):
+        """The answer as it's written: one JSON object per line, {"text": ...} or {"error": ...}."""
+        context = ask_context(body.mode)
+        from .analyst import AnalystUnavailable
+
+        def lines():
+            try:
+                if ask_stream_fn is None:
+                    yield json.dumps({"text": ask_fn(body.question, context)}) + "\n"
+                else:
+                    for piece in ask_stream_fn(body.question, context):
+                        yield json.dumps({"text": piece}) + "\n"
+            except AnalystUnavailable as exc:
+                yield json.dumps({"error": str(exc)}) + "\n"
+            except Exception as exc:  # the reply has started, so the error goes in the stream
+                log.warning("Analyst chat failed: %s", exc)
+                yield json.dumps({"error": "The analyst hit a problem. Try again in a minute."}) + "\n"
+            yield json.dumps({"done": True}) + "\n"
+
+        return StreamingResponse(lines(), media_type="application/x-ndjson",
+                                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
     return app
 
@@ -902,11 +931,11 @@ def main() -> None:
     journal = Journal(base.journal_path)
     store = SettingsStore(Path(base.journal_path).with_name("app_settings.json"))
 
-    analyst, ask_fn, lessons_fn, spend = None, None, None, None
+    analyst, ask_fn, ask_stream_fn, lessons_fn, spend = None, None, None, None, None
     if os.environ.get("ANTHROPIC_API_KEY"):
         import anthropic
 
-        from .analyst import Analyst, ask
+        from .analyst import Analyst, ask, ask_stream
         from .learning import claude_lessons
 
         from .spend import DEFAULT_MONTHLY_CAP, MeteredClient, SpendTracker
@@ -916,6 +945,7 @@ def main() -> None:
         client = MeteredClient(anthropic.Anthropic(), spend)
         analyst = Analyst(client)
         ask_fn = lambda q, ctx: ask(client, q, ctx)  # noqa: E731
+        ask_stream_fn = lambda q, ctx: ask_stream(client, q, ctx)  # noqa: E731
         lessons_fn = claude_lessons(client)
     learner = Learner(journal, lessons_fn)
 
@@ -940,6 +970,8 @@ def main() -> None:
         }
         if mode is Mode.TEST:
             r.learner = learner
+            if r.broker is not None:  # prices for grading the analyst's month-old calls
+                learner.prices_fn = r.broker.get_daily_bars
             if r.broker is not None:
                 r.lab = make_lab(store, r, journal)
         if mode is Mode.LIVE and not live_enabled:
@@ -947,7 +979,8 @@ def main() -> None:
         r.start_thread()
         runners[mode] = r
 
-    app = create_app(runners, journal, token, ask_fn, live_enabled, skip_results, learner, spend)
+    app = create_app(runners, journal, token, ask_fn, live_enabled, skip_results, learner, spend,
+                     ask_stream_fn)
     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", "8000")))
 
 

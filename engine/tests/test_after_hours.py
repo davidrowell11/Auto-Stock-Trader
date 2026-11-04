@@ -13,7 +13,7 @@ from autotrader.config import Mode, Settings
 from autotrader.engine import Engine, limit_for
 from autotrader.journal import Journal
 from autotrader.market import MARKET
-from autotrader.models import Asset, Side
+from autotrader.models import Asset, OrderRequest, Side
 
 from helpers import make_bars, uptrend
 from test_final_check import AUTH, TOKEN, SlowBroker, TestClient, crash
@@ -198,6 +198,37 @@ class AfterHoursServerTests(unittest.TestCase):
         self.assertIs(sell.side, Side.SELL)
         self.assertTrue(sell.extended_hours)
         self.assertIsNotNone(sell.limit_price)
+
+
+class LostReplyTests(unittest.TestCase):
+    def test_order_whose_reply_was_lost_is_found_by_its_id(self):
+        placed = {}
+
+        class Trading:
+            def submit_order(self, req):
+                placed[req.client_order_id] = SimpleNamespace(id="abc123")
+                raise TimeoutError("read timed out")  # Alpaca took it; the reply never came
+
+            def get_order_by_client_id(self, client_id):
+                return placed[client_id]
+
+        b = alpaca_broker.AlpacaBroker.__new__(alpaca_broker.AlpacaBroker)
+        b.trading = Trading()
+        order_id = b.submit_order(OrderRequest("AAPL", Side.BUY, 1, None, "test"))
+        self.assertEqual(order_id, "abc123")
+
+    def test_order_that_never_arrived_still_fails(self):
+        class Trading:
+            def submit_order(self, req):
+                raise ConnectionError("no network")
+
+            def get_order_by_client_id(self, client_id):
+                raise LookupError("not found")
+
+        b = alpaca_broker.AlpacaBroker.__new__(alpaca_broker.AlpacaBroker)
+        b.trading = Trading()
+        with self.assertRaises(ConnectionError):
+            b.submit_order(OrderRequest("AAPL", Side.BUY, 1, 150.0, "test"))
 
 
 if __name__ == "__main__":

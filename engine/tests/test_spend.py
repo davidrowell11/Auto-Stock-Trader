@@ -9,7 +9,8 @@ from types import SimpleNamespace
 from autotrader.analyst import Analyst, AnalystUnavailable
 from autotrader.config import Mode
 from autotrader.journal import Journal
-from autotrader.spend import MeteredClient, SpendTracker, cost_of
+from autotrader.spend import (MeteredClient, SpendingCapReached, SpendTracker, cost_of,
+                              most_it_could_cost)
 
 from helpers import make_bars, uptrend
 from test_final_check import AUTH, TOKEN, SlowBroker, TestClient
@@ -53,7 +54,7 @@ class CapTests(unittest.TestCase):
 
     def test_stops_at_the_cap_and_resets_next_month(self):
         self.analyst.review({"symbol": "A"})  # $4
-        self.analyst.review({"symbol": "A"})  # $8: over the $5 cap now
+        self.analyst.review({"symbol": "A"})  # its worst case (~$0.70) fitted; the fake charged $4
         with self.assertRaises(AnalystUnavailable) as e:
             self.analyst.review({"symbol": "A"})
         self.assertIn("spending cap", str(e.exception))
@@ -61,6 +62,49 @@ class CapTests(unittest.TestCase):
         self.month[0] = datetime(2026, 12, 1, tzinfo=timezone.utc)
         self.analyst.review({"symbol": "A"})
         self.assertEqual(self.tracker.report()["spent"], 4.0)
+
+    def test_calls_running_at_once_cant_pass_the_cap(self):
+        worst = most_it_could_cost({"model": "claude-opus-5-5", "max_tokens": 16000,
+                                    "tools": [{"type": "web_search_20260209", "max_uses": 3}]})
+        self.assertGreater(worst, 0.3)  # 16k output tokens alone are $0.32 on Opus
+        tracker = SpendTracker(self.journal, lambda: 1.0, now=lambda: self.month[0])
+        tracker.reserve(0.6)  # one call still running
+        with self.assertRaises(SpendingCapReached):
+            tracker.reserve(0.6)  # a second one could take the month to $1.20
+        tracker.release(0.6)
+        tracker.reserve(0.6)  # fits again once the first has settled
+
+    def test_streamed_answers_are_counted(self):
+        class Stream:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def get_final_message(self):
+                return SimpleNamespace(model="claude-opus-5-5", usage=usage(100_000, 10_000))
+
+        tracker = SpendTracker(self.journal, lambda: 5.0, now=lambda: self.month[0])
+        raw = SimpleNamespace(messages=None,
+                              beta=SimpleNamespace(messages=SimpleNamespace(stream=lambda **kw: Stream())))
+        client = MeteredClient(raw, tracker)
+        with client.beta.messages.stream(model="claude-opus-5-5", max_tokens=1000,
+                                         system="Answer", messages=[]):
+            self.assertGreater(tracker._reserved, 0)
+        self.assertEqual(tracker._reserved, 0.0)
+        self.assertAlmostEqual(tracker.spent(), 0.4 + 0.2)  # 100k in at $4/M, 10k out at $20/M
+
+    def test_a_failed_call_gives_its_reservation_back(self):
+        def boom(**kw):
+            raise RuntimeError("network")
+        tracker = SpendTracker(self.journal, lambda: 1.0, now=lambda: self.month[0])
+        raw = SimpleNamespace(messages=SimpleNamespace(create=boom),
+                              beta=SimpleNamespace(messages=None))
+        client = MeteredClient(raw, tracker)
+        with self.assertRaises(RuntimeError):
+            client.messages.create(model="claude-haiku-5-5", max_tokens=1000, messages=[])
+        self.assertEqual(tracker._reserved, 0.0)
 
 
 @unittest.skipIf(TestClient is None, "fastapi not installed")

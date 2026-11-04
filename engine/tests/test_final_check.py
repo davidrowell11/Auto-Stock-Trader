@@ -212,21 +212,40 @@ class OrderTrackingTests(unittest.TestCase):
         self.assertEqual(len(j.events("test", 10_000)), 800)
 
 
+class FakeStream:
+    def __init__(self, pieces, stop_reason):
+        self.pieces, self.stop_reason = pieces, stop_reason
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    @property
+    def text_stream(self):
+        return iter(self.pieces)
+
+    def get_final_message(self):
+        return SimpleNamespace(stop_reason=self.stop_reason, model="claude-opus-5-5", usage=None,
+                               content=[SimpleNamespace(type="text", text="".join(self.pieces))])
+
+
 class AskTests(unittest.TestCase):
     def test_paused_turn_is_continued(self):
         calls = []
 
         class Messages:
-            def create(self, **kw):
+            def stream(self, **kw):
                 calls.append(kw)
                 if len(calls) == 1:
-                    return SimpleNamespace(stop_reason="pause_turn", content=[])
-                return SimpleNamespace(stop_reason="end_turn",
-                                       content=[SimpleNamespace(type="text", text="All good.")])
+                    return FakeStream([], "pause_turn")
+                return FakeStream(["All ", "good."], "end_turn")
 
         client = SimpleNamespace(beta=SimpleNamespace(messages=Messages()))
         self.assertEqual(analyst.ask(client, "how am I doing?", {}), "All good.")
         self.assertEqual(len(calls), 2)
+        self.assertEqual(list(analyst.ask_stream(client, "again?", {}))[-2:], ["All ", "good."])
 
 
 @unittest.skipIf(TestClient is None, "fastapi not installed")

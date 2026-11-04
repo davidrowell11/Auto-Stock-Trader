@@ -10,6 +10,45 @@ from .config import Settings
 from .models import Account, Position
 
 
+CORRELATION_DAYS = 63  # about three months of daily moves
+CORRELATION_LIMIT = 0.8  # moves this closely with a holding: counted as the same bet
+
+
+def correlation(a: Sequence[float], b: Sequence[float]) -> float | None:
+    """Pearson correlation of two equal-length series, or None if either never moves."""
+    n = len(a)
+    if n < 2 or n != len(b):
+        return None
+    ma, mb = sum(a) / n, sum(b) / n
+    cov = sum((x - ma) * (y - mb) for x, y in zip(a, b))
+    va = sum((x - ma) ** 2 for x in a)
+    vb = sum((y - mb) ** 2 for y in b)
+    if va <= 1e-12 or vb <= 1e-12:
+        return None
+    return cov / math.sqrt(va * vb)
+
+
+def daily_moves(bars) -> dict:
+    """Day -> that day's % change, for the last CORRELATION_DAYS days."""
+    tail = list(bars)[-(CORRELATION_DAYS + 1):]
+    return {b.time: b.close / a.close - 1 for a, b in zip(tail, tail[1:]) if a.close > 0}
+
+
+def closest_holding(symbol: str, bars: dict, positions: Sequence[Position]):
+    """The holding this stock moves most closely with, if at or over the limit: (position, corr)."""
+    mine = daily_moves(bars.get(symbol, []))
+    best = None
+    for p in positions:
+        theirs = daily_moves(bars.get(p.symbol, []))
+        days = sorted(mine.keys() & theirs.keys())
+        if len(days) < CORRELATION_DAYS // 2:
+            continue
+        c = correlation([mine[d] for d in days], [theirs[d] for d in days])
+        if c is not None and c >= CORRELATION_LIMIT and (best is None or c > best[1]):
+            best = (p, c)
+    return best
+
+
 @dataclass(frozen=True)
 class SizeDecision:
     qty: float  # whole shares, or fractions when the stock allows it
