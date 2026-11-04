@@ -7,6 +7,9 @@ import 'models.dart';
 /// What the kill switch sold, and what it couldn't sell.
 typedef KillResult = ({List<String> sold, List<String> failed});
 
+/// What "Let the bot manage" did.
+typedef AdoptResult = ({List<String> symbols, bool queued});
+
 class ApiException implements Exception {
   ApiException(this.message);
   final String message;
@@ -31,8 +34,9 @@ abstract class TraderApi {
   Future<void> setRunning(String mode, bool running);
   Future<KillResult> kill(String mode, {required bool sellAll});
 
-  /// Hands the stocks the bot isn't tracking over to it. Returns their symbols.
-  Future<List<String>> adopt(String mode);
+  /// Hands the stocks the bot isn't tracking over to it. Returns their symbols, or queued when
+  /// the bot is mid-check and will take them over as soon as it finishes.
+  Future<AdoptResult> adopt(String mode);
   Future<WeeklyReport> weekly(String mode);
   Future<List<PriceBar>> bars(
     String symbol, {
@@ -204,11 +208,14 @@ class HttpApi implements TraderApi {
       _send('POST', '/api/$mode/${running ? 'start' : 'stop'}');
 
   @override
-  Future<List<String>> adopt(String mode) async {
+  Future<AdoptResult> adopt(String mode) async {
     final r = await _send('POST', '/api/$mode/adopt');
-    return [
-      for (final a in r['adopted'] as List) (a as Map)['symbol'].toString(),
-    ];
+    return (
+      symbols: [
+        for (final a in r['adopted'] as List) (a as Map)['symbol'].toString(),
+      ],
+      queued: r['queued'] as bool? ?? false,
+    );
   }
 
   @override

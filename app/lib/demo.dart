@@ -410,8 +410,8 @@ class DemoApi implements TraderApi {
   final _untracked = {'test'};
 
   @override
-  Future<List<String>> adopt(String mode) async =>
-      _untracked.remove(mode) ? ['KO'] : <String>[];
+  Future<AdoptResult> adopt(String mode) async =>
+      (symbols: _untracked.remove(mode) ? ['KO'] : <String>[], queued: false);
 
   @override
   Future<KillResult> kill(String mode, {required bool sellAll}) async {

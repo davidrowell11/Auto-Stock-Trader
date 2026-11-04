@@ -134,6 +134,7 @@ class BotRunner:
 
     APPROVAL_MAX_AGE = APPROVAL_MAX_AGE
     KILL_WAIT_SECONDS = 60
+    ADOPT_WAIT_SECONDS = 3  # then queue it rather than keep the app waiting
 
     def __init__(self, mode: Mode, store: SettingsStore, journal: Journal, lock: threading.RLock,
                  broker_factory: Callable[[Mode], Broker], engine_kwargs: dict | None = None,
@@ -158,6 +159,7 @@ class BotRunner:
         self._status_lock = threading.Lock()  # the bot thread writes, app requests read
         self.last_report: dict | None = None
         self.busy = False  # True while a check is running
+        self.adopt_pending = False  # "Let the bot manage" tapped during a check: done before the next
         self._wake = threading.Event()  # set by Start so the bot begins at once
         try:
             self.broker: Broker | None = broker_factory(mode)
@@ -254,6 +256,12 @@ class BotRunner:
         with self.lock:
             self.busy = True
             try:
+                if self.adopt_pending:
+                    try:
+                        self._adopt()
+                    except Exception as exc:  # try again before the next check
+                        self.adopt_pending = True
+                        log.warning("Couldn't hand the stocks over: %s", exc)
                 self.step("Starting a check" + SESSION_NOTE.get(session, ""))
                 report = self.engine(session).run_cycle()
                 self.check_live_safety(self.broker.get_account().equity)
@@ -437,42 +445,49 @@ class BotRunner:
         """
         if self.broker is None:
             raise HTTPException(503, self.error or "Broker not connected")
-        if not self.lock.acquire(timeout=10):
-            raise HTTPException(409, "The bot is in the middle of a cycle. Try again in a minute.")
+        if not self.lock.acquire(timeout=self.ADOPT_WAIT_SECONDS):
+            # A check with analyst reviews can take minutes: do it as soon as this one ends.
+            self.adopt_pending = True
+            return {"adopted": [], "queued": True}
         try:
-            engine = self.engine()
-            mine, working = engine.sync_holdings()
-            owned = {p.symbol: p.qty for p in mine}
-            never = {s.upper() for s in engine.s.never_buy}  # you told it to stay away from these
-            extra = [p for p in self.broker.get_positions()
-                     if p.symbol not in working and p.symbol.upper() not in never
-                     and p.qty - owned.get(p.symbol, 0.0) > DUST]
-            if not extra:
-                return {"adopted": []}
-            try:
-                bars = self.broker.get_daily_bars([p.symbol for p in extra], 30)
-            except Exception as exc:
-                log.warning("Couldn't fetch prices for new safety stops: %s", exc)
-                bars = {}
-            adopted = []
-            for p in extra:
-                state = self.journal.get_stop(self.mode.value, p.symbol)
-                if state is None:
-                    history = bars.get(p.symbol) or []
-                    atr = ind.atr(history, 14) if history else None
-                    # Measured from today's price, not the purchase price: a stock that already
-                    # fell would otherwise be under its new stop and sold on the next check.
-                    stop = (strategy.initial_stop(p.current_price, atr, strategy.stop_multiple(p.current_price, engine.s))
-                            if atr else p.current_price * (1 - HARD_LIMITS.max_stop_loss_pct))
-                    state = StopState(p.avg_price, stop, max(p.avg_price, p.current_price))
-                state.qty = p.qty
-                self.journal.save_stop(self.mode.value, p.symbol, state)
-                adopted.append({"symbol": p.symbol, "qty": p.qty, "stop": round(state.stop_price, 2)})
-            names = ", ".join(a["symbol"] for a in adopted)
-            self.journal.add_event(self.mode.value, "adopt", f"Now managing {names}, with safety stops")
-            return {"adopted": adopted}
+            return self._adopt()
         finally:
             self.lock.release()
+
+    def _adopt(self) -> dict:
+        """The handover itself. The caller holds the lock."""
+        self.adopt_pending = False
+        engine = self.engine()
+        mine, working = engine.sync_holdings()
+        owned = {p.symbol: p.qty for p in mine}
+        never = {s.upper() for s in engine.s.never_buy}  # you told it to stay away from these
+        extra = [p for p in self.broker.get_positions()
+                 if p.symbol not in working and p.symbol.upper() not in never
+                 and p.qty - owned.get(p.symbol, 0.0) > DUST]
+        if not extra:
+            return {"adopted": []}
+        try:
+            bars = self.broker.get_daily_bars([p.symbol for p in extra], 30)
+        except Exception as exc:
+            log.warning("Couldn't fetch prices for new safety stops: %s", exc)
+            bars = {}
+        adopted = []
+        for p in extra:
+            state = self.journal.get_stop(self.mode.value, p.symbol)
+            if state is None:
+                history = bars.get(p.symbol) or []
+                atr = ind.atr(history, 14) if history else None
+                # Measured from today's price, not the purchase price: a stock that already
+                # fell would otherwise be under its new stop and sold on the next check.
+                stop = (strategy.initial_stop(p.current_price, atr, strategy.stop_multiple(p.current_price, engine.s))
+                        if atr else p.current_price * (1 - HARD_LIMITS.max_stop_loss_pct))
+                state = StopState(p.avg_price, stop, max(p.avg_price, p.current_price))
+            state.qty = p.qty
+            self.journal.save_stop(self.mode.value, p.symbol, state)
+            adopted.append({"symbol": p.symbol, "qty": p.qty, "stop": round(state.stop_price, 2)})
+        names = ", ".join(a["symbol"] for a in adopted)
+        self.journal.add_event(self.mode.value, "adopt", f"Now managing {names}, with safety stops")
+        return {"adopted": adopted}
 
     def reject(self, approval_id: int) -> None:
         with self.lock:

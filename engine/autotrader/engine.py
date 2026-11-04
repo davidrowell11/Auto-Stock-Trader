@@ -126,6 +126,7 @@ class Engine:
         # Checked before every order, so Stop or the kill switch takes effect mid-cycle.
         self.keep_going = keep_going
         self.open_orders: set[str] = set()
+        self.not_mine: set[str] = set()
         self.working: set[str] = set()  # stocks with one of the bot's own orders still working
         self.assets: dict[str, object] = {}
         self.earnings = earnings  # e.g. EarningsCalendar.reports_soon
@@ -234,6 +235,9 @@ class Engine:
         positions, self.working = self.sync_holdings(reprice=True)
         # Anyone's unfilled orders (after re-pricing the bot's): no new trade in those stocks.
         self.open_orders = self.broker.open_order_symbols()
+        # Stocks already in the account that the bot doesn't manage (yours, or ones it lost track
+        # of): buying more would double up without the bot knowing.
+        self.not_mine = {p.symbol for p in self.broker.get_positions()} - {p.symbol for p in positions}
         if self.extended and positions:
             # Outside regular hours the position's price can lag; use the latest trade.
             latest = self.broker.latest_prices(p.symbol for p in positions)
@@ -349,6 +353,10 @@ class Engine:
         latest_day = market[-1].time if market else None
         for symbol in universe:
             if symbol in held or symbol in self.open_orders or self.journal.has_pending(self.mode, symbol):
+                continue
+            if symbol in self.not_mine:
+                report.skipped.append(f"{symbol}: already in the account but not managed by the bot "
+                                      "(tap Let the bot manage to hand it over)")
                 continue
             history = bars.get(symbol)
             if not history:

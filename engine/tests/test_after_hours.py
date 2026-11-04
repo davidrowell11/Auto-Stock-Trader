@@ -54,6 +54,12 @@ class AfterHoursEngineTests(unittest.TestCase):
         self.assertAlmostEqual(sell.limit_price, round(price * 0.98, 2))
         self.assertTrue(report.sells)
 
+    def test_never_buys_more_of_a_stock_already_in_the_account(self):
+        self.broker.holdings["AAPL"] = (5, 100.0)  # in the account, but not the bot's
+        report = engine(self.broker, self.journal, "regular").run_cycle()
+        self.assertEqual(self.broker.orders, [])
+        self.assertTrue(any("not managed by the bot" in s for s in report.skipped))
+
     def test_leveraged_funds_are_never_bought(self):
         self.broker.assets["AAPL"] = Asset("AAPL", exchange="NASDAQ",
                                            name="Direxion Daily AAPL Bull 2X Shares")
@@ -203,6 +209,30 @@ class AfterHoursServerTests(unittest.TestCase):
         broker.holdings["AAPL"] = (10, broker.price("AAPL") * 1.5)  # bought higher, now down a third
         self.c.post("/api/test/adopt", headers=AUTH)
         self.assertLess(self.journal.get_stop("test", "AAPL").stop_price, broker.price("AAPL"))
+
+    def test_a_handover_during_a_check_waits_for_it(self):
+        r = self.runners[Mode.TEST]
+        self.brokers[Mode.TEST].holdings["AAPL"] = (10, self.brokers[Mode.TEST].price("AAPL"))
+        held = threading.Event()
+        done = threading.Event()
+
+        def busy():  # a long check holding the lock
+            with r.lock:
+                held.set()
+                done.wait(5)
+
+        t = threading.Thread(target=busy)
+        t.start()
+        held.wait(5)
+        r.ADOPT_WAIT_SECONDS = 0.1
+        res = self.c.post("/api/test/adopt", headers=AUTH).json()
+        done.set()
+        t.join()
+        self.assertEqual(res, {"adopted": [], "queued": True})
+        self.assertIsNone(self.journal.get_stop("test", "AAPL"))
+        r.run_once("regular")  # the next check hands them over first
+        self.assertFalse(r.adopt_pending)
+        self.assertEqual(self.journal.get_stop("test", "AAPL").qty, 10)
 
     def test_never_buy_stocks_are_not_handed_over(self):
         self.store.update(Mode.TEST, {"never_buy": ["AAPL"]})
