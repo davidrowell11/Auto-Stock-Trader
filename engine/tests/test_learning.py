@@ -179,6 +179,13 @@ class SimilarTradesTests(unittest.TestCase):
         self.assertIn("1 of 3 made money", note)
         self.assertEqual(m.similar_note(["trend", "penny"], 0.2), (None, []))  # nothing like it yet
 
+    def test_recent_cases_rank_ahead_of_old_ones(self):
+        from datetime import date
+        old = {"symbol": "OLD", "sources": ["trend"], "score": 0.6, "return": 0.1, "sold": "2025-11-01"}
+        new = {"symbol": "NEW", "sources": ["trend"], "score": 0.6, "return": -0.1, "sold": "2026-10-30"}
+        got = Memory(cases=[old, new]).similar(["trend"], 0.6, today=date(2026, 11, 4))
+        self.assertEqual([c["symbol"] for c in got], ["NEW", "OLD"])
+
     def test_shown_with_the_buy_and_given_to_the_analyst(self):
         seen = {}
 

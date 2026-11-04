@@ -16,7 +16,9 @@ result joins its memory. Once a week the bot:
    shown with the buy's reasons and given to the analyst, so it can see "the
    last 4 buys like this: 1 made money". (An idea borrowed from case-based
    agent memories such as ReasoningBank, without the vector database: a
-   handful of trade features is enough here.)
+   handful of trade features is enough here.) Recent cases count as a bit
+   more alike than old ones, since what works in the market drifts over time
+   (the "temporal decay" idea from RuVector).
 
 What it learns can only change which stocks rank first and what the analyst
 watches out for. The analyst can only veto a buy, and nothing here touches
@@ -33,7 +35,7 @@ import logging
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from .journal import Journal
 
@@ -49,6 +51,7 @@ MAX_OUTCOMES_SHOWN = 60
 MAX_CASES = 200  # finished trades kept for "similar past trades"
 SIMILAR_K = 5
 SIMILAR_MAX_DISTANCE = 0.8
+RECENCY_PENALTY = 0.3  # a year-old case counts as this much less alike (markets change)
 
 # Sources whose weight the bot adjusts, and how each appears in the app.
 WEIGHTED = {"insider": "Insider buying", "congress": "Congress members' buys",
@@ -111,10 +114,20 @@ class Memory:
     lessons: list[str] = field(default_factory=list)
     cases: list[dict] = field(default_factory=list)  # finished trades, as Outcome.as_dict()
 
-    def similar(self, sources: list[str], score: float) -> list[dict]:
+    def similar(self, sources: list[str], score: float,
+                today: date | None = None) -> list[dict]:
         """The closest past finished trades to a buy like this one, nearest first."""
-        scored = sorted(((distance(sources, score, c.get("sources", []), c.get("score")), c)
-                         for c in self.cases), key=lambda x: x[0])
+        today = today or datetime.now(timezone.utc).date()
+
+        def age_penalty(c: dict) -> float:
+            try:
+                days = (today - date.fromisoformat(str(c.get("sold", ""))[:10])).days
+            except ValueError:
+                return RECENCY_PENALTY
+            return RECENCY_PENALTY * min(max(days, 0), 365) / 365
+
+        scored = sorted(((distance(sources, score, c.get("sources", []), c.get("score"))
+                          + age_penalty(c), c) for c in self.cases), key=lambda x: x[0])
         return [c for d, c in scored if d <= SIMILAR_MAX_DISTANCE][:SIMILAR_K]
 
     def similar_note(self, sources: list[str], score: float) -> tuple[str | None, list[dict]]:
