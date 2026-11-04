@@ -15,6 +15,7 @@ class SettingsScreen extends StatefulWidget {
 
 class _SettingsScreenState extends State<SettingsScreen> {
   BotSettings? test, live;
+  AiSpending? spending;
   String? error;
 
   @override
@@ -37,6 +38,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
       }
     } on ApiException catch (e) {
       if (mounted) setState(() => error = e.message);
+    }
+    try {
+      final s = await api.aiSpending();
+      if (mounted) setState(() => spending = s);
+    } on ApiException {
+      // An older server without the cap: the rest of Settings still works.
     }
   }
 
@@ -147,6 +154,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   'Close calls and every penny stock still go to the full analyst.',
                   style: t.bodySmall?.copyWith(color: AppColors.muted),
                 ),
+                if (spending?.enabled ?? false) ...[
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Monthly spending cap'),
+                    subtitle: Text(
+                      'About ${money.format(spending!.spent)} spent this month of '
+                      '${moneyRound.format(spending!.cap ?? 0)}. At the cap the analyst pauses until '
+                      'the 1st: no penny stocks, other buys on the rules alone.',
+                    ),
+                    trailing: const Icon(Icons.edit_rounded),
+                    onTap: _editAiCap,
+                  ),
+                  const Divider(),
+                ],
                 SwitchListTile(
                   contentPadding: EdgeInsets.zero,
                   title: const Text('Test: cheaper AI reviews'),
@@ -285,6 +306,62 @@ class _SettingsScreenState extends State<SettingsScreen> {
       if (ok != true) return;
     }
     await save('live', {'approve_mode': approve});
+  }
+
+  Future<void> _editAiCap() async {
+    final ctrl = TextEditingController(
+      text: spending?.cap?.toStringAsFixed(0) ?? '20',
+    );
+    final result = await showDialog<String>(
+      context: context,
+      builder: (c) => AlertDialog(
+        title: const Text('Monthly AI spending cap'),
+        content: TextField(
+          controller: ctrl,
+          keyboardType: TextInputType.number,
+          decoration: const InputDecoration(
+            prefixText: '\$ ',
+            hintText: 'For example 20',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(c),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(c, ctrl.text),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+    if (result == null) return;
+    final v = parseMoney(result.trim());
+    if (v == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              '"${result.trim()}" isn\'t an amount. The cap was not changed.',
+            ),
+          ),
+        );
+      }
+      return;
+    }
+    try {
+      final s = await api.setAiCap(v);
+      if (!mounted) return;
+      setState(() => spending = s);
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('Saved')));
+    } on ApiException catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(e.message)));
+      }
+    }
   }
 
   Future<void> _editCap() async {

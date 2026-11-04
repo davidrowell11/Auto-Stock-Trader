@@ -454,3 +454,105 @@ class Learning {
     everyDays: (j['every_days'] as num).toInt(),
   );
 }
+
+/// One rule the strategy lab changed from the standard rules.
+class LabChange {
+  LabChange({required this.label, required this.standard, required this.now});
+  final String label;
+  final double standard, now;
+  factory LabChange.fromJson(Map<String, dynamic> j) => LabChange(
+    label: j['label'] as String,
+    standard: _d(j['standard']),
+    now: _d(j['now']),
+  );
+}
+
+/// One weekly experiment: the idea, whether it was kept, and why.
+class LabExperiment {
+  LabExperiment({
+    required this.ts,
+    required this.change,
+    required this.kept,
+    required this.verdict,
+    required this.evidence,
+    this.unseenCurrent,
+    this.unseenNew,
+  });
+  final DateTime ts;
+  final String change, verdict;
+  final bool kept;
+  final List<String> evidence;
+
+  /// Results on the newer prices it wasn't tuned on: return, sharpe, max_drop.
+  final Map<String, dynamic>? unseenCurrent, unseenNew;
+
+  factory LabExperiment.fromJson(Map<String, dynamic> j) {
+    final unseen = j['unseen'] as Map<String, dynamic>?;
+    return LabExperiment(
+      ts: DateTime.parse(j['ts'] as String),
+      change: j['change'] as String,
+      kept: j['kept'] as bool? ?? false,
+      verdict: j['verdict'] as String? ?? '',
+      evidence: [for (final e in (j['evidence'] as List?) ?? []) e.toString()],
+      unseenCurrent: unseen?['current'] as Map<String, dynamic>?,
+      unseenNew: unseen?['new'] as Map<String, dynamic>?,
+    );
+  }
+}
+
+class LabReport {
+  LabReport({
+    required this.enabled,
+    required this.running,
+    required this.changes,
+    this.proposed,
+    this.proposedEntry,
+    required this.experiments,
+    required this.everyDays,
+    required this.limitsNote,
+  });
+  final bool enabled, running;
+  final List<LabChange> changes;
+  final List<LabChange>? proposed;
+  final LabExperiment? proposedEntry;
+  final List<LabExperiment> experiments;
+  final int everyDays;
+  final String limitsNote;
+
+  factory LabReport.fromJson(Map<String, dynamic> j) {
+    final p = j['proposed'] as Map<String, dynamic>?;
+    final entry = p?['entry'] as Map<String, dynamic>?;
+    return LabReport(
+      enabled: j['enabled'] as bool? ?? false,
+      running: j['running'] as bool? ?? false,
+      changes: [
+        for (final c in (j['changes'] as List?) ?? []) LabChange.fromJson(c),
+      ],
+      proposed: p == null
+          ? null
+          : [for (final c in p['changes'] as List) LabChange.fromJson(c)],
+      proposedEntry: entry != null && entry['ts'] != null
+          ? LabExperiment.fromJson(entry)
+          : null,
+      experiments: [
+        for (final e in (j['experiments'] as List?) ?? [])
+          LabExperiment.fromJson(e),
+      ],
+      everyDays: (j['every_days'] as num?)?.toInt() ?? 7,
+      limitsNote: j['limits_note'] as String? ?? '',
+    );
+  }
+}
+
+/// What the AI analyst has cost this month and the cap.
+class AiSpending {
+  AiSpending({required this.enabled, required this.spent, this.cap});
+  final bool enabled;
+  final double spent;
+  final double? cap;
+  factory AiSpending.fromJson(Map<String, dynamic> j) => AiSpending(
+    enabled: j['enabled'] as bool? ?? false,
+    spent: _d(j['spent']),
+    cap: _dn(j['cap']),
+  );
+}

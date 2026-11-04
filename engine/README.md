@@ -54,6 +54,18 @@ calendar, so holidays and early closes are handled).
    lessons that go into every analyst review. Test uses new lessons at once;
    Live only after you approve them in the app. Learning never touches
    stops, sizes, budgets or penny-stock limits.
+7. **Tests one rule change a week** (`lab.py`, the strategy lab). It tries
+   one step on one setting (safety-stop distance, minimum trend score),
+   replays it on the older two thirds of three years of prices, then on the
+   newer third it never tuned on. It keeps the change only if it wins on
+   both (Sharpe +0.10 on the unseen part, higher return, a drop no more than
+   1 point worse) and fixes some of the current rules' losing trades. Test
+   uses it at once; Live after your approval; either can be undone.
+
+**AI spending cap** (`spend.py`): every Claude call is priced from its token
+counts and counted toward a monthly cap ($20 by default, set in the app).
+At the cap the analyst pauses until the 1st: no penny-stock buys, other buys
+on the rules alone, as when Claude can't be reached.
 
 ## Safety rules
 

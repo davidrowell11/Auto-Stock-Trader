@@ -36,6 +36,7 @@ from .config import HARD_LIMITS, Mode, Settings, load_settings
 from .engine import APPROVAL_MAX_AGE, Engine, bot_positions, limit_for
 from .readiness import live_checks, test_results
 from .journal import Journal, StopState
+from .lab import Lab, clamp_rules
 from .learning import Learner, LearnerBusy
 from .learning import report as learning_report
 from .models import OrderRequest, Side
@@ -69,6 +70,19 @@ class SettingsStore:
             tmp.write_text(json.dumps(self.data, indent=2))
             tmp.replace(self.path)  # atomic, so a crash can't leave a half-written file
 
+    def ai_cap(self, default: float) -> float:
+        """The monthly Claude spending cap (one for the whole server; both bots share the API key)."""
+        value = self.data.get("ai", {}).get("monthly_cap")
+        return default if value is None else float(value)
+
+    def set_ai_cap(self, cap: float) -> None:
+        with self._lock:
+            self.data.setdefault("ai", {})["monthly_cap"] = cap
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(self.data, indent=2))
+            tmp.replace(self.path)
+
     def starter_active(self) -> bool:
         """True until Live has been running for the starter period."""
         first = self.get(Mode.LIVE).get("first_started")
@@ -77,10 +91,12 @@ class SettingsStore:
         age = datetime.now(timezone.utc) - datetime.fromisoformat(first)
         return age < timedelta(days=HARD_LIMITS.live_starter_days)
 
-    def settings_for(self, mode: Mode) -> Settings:
+    def settings_for(self, mode: Mode, with_lab: bool = True) -> Settings:
         saved = self.get(mode)
         overrides = {k: (tuple(v) if isinstance(v, list) else v)
                      for k, v in saved.items() if k in EDITABLE}
+        if with_lab:  # rule changes the strategy lab proved (Live: only once you approved them)
+            overrides.update(clamp_rules(saved.get("lab_rules", {})))
         # After-hours buying starts on for Test (fake money) and off for Live.
         overrides.setdefault("after_hours_buys", mode is Mode.TEST)
         # Cheaper AI reviews too: tried in Test first; switch on for Live in the app.
@@ -143,6 +159,8 @@ class BotRunner:
         self.halted_by_you = threading.Event()  # set by Stop or the kill switch, cleared by Start
         self._thread: threading.Thread | None = None
         self.learner: Learner | None = None  # set on the Test bot: it does the weekly learning
+        self.lab: Lab | None = None  # ...and the weekly strategy-lab experiment
+        self._lab_thread: threading.Thread | None = None
 
     def step(self, text: str, log_it: bool = True) -> None:
         """Record what the bot is doing right now (and, if log_it, add it to the recent steps)."""
@@ -276,7 +294,29 @@ class BotRunner:
                 if self.mode is Mode.LIVE and self.failures >= HARD_LIMITS.live_auto_stop_errors:
                     self.pause_buying(f"{self.failures} cycles failed in a row ({exc})")
             self.learn_if_due()
+            self.lab_if_due()
             self._pause(wait)
+
+    def lab_if_due(self, force: bool = False) -> bool:
+        """Start the weekly strategy-lab experiment in the background (it replays years of prices)."""
+        if self.lab is None or (self._lab_thread and self._lab_thread.is_alive()):
+            return False
+        try:
+            if not (force or self.lab.due()):
+                return False
+        except Exception:
+            log.exception("Strategy lab check failed")
+            return False
+
+        def work():
+            try:
+                self.lab.run()
+            except Exception:
+                log.exception("Strategy lab experiment failed")
+
+        self._lab_thread = threading.Thread(target=work, name="strategy-lab", daemon=True)
+        self._lab_thread.start()
+        return True
 
     def learn_if_due(self) -> None:
         """Once a week, learn from finished trades (runs even while stopped or the market is closed)."""
@@ -467,6 +507,14 @@ class KillRequest(BaseModel):
     sell_all: bool = False
 
 
+class AiBudget(BaseModel):
+    monthly_cap: float = Field(ge=0, le=10_000)
+
+
+class LabDecision(BaseModel):
+    decision: str = Field(pattern="^(approve|reject)$")
+
+
 class LearningDecision(BaseModel):
     decision: str = Field(pattern="^(approve|reject)$")
 
@@ -479,7 +527,7 @@ class AskRequest(BaseModel):
 def create_app(runners: dict[Mode, BotRunner], journal: Journal, token: str,
                ask_fn: Callable[[str, dict], str] | None = None,
                live_enabled: bool = False, skip_results: bool = False,
-               learner: Learner | None = None) -> FastAPI:
+               learner: Learner | None = None, spend=None) -> FastAPI:
     if not token:
         raise RuntimeError("Set AUTOTRADER_APP_TOKEN before starting the server")
     learner = learner or Learner(journal)
@@ -610,6 +658,70 @@ def create_app(runners: dict[Mode, BotRunner], journal: Journal, token: str,
         if learned is None:
             raise HTTPException(409, "Not enough finished trades to learn from yet")
         return learning_report(journal, Mode.TEST.value)
+
+    @app.get("/api/ai/spending", **secured)
+    def ai_spending():
+        """What the AI analyst has cost this month, and the cap."""
+        if spend is None:
+            return {"enabled": False, "month": None, "spent": 0.0, "cap": None}
+        return {"enabled": True, **spend.report()}
+
+    @app.put("/api/ai/spending", **secured)
+    def set_ai_spending(body: AiBudget):
+        if spend is None:
+            raise HTTPException(503, "The AI analyst is off (add ANTHROPIC_API_KEY on the server)")
+        runners[Mode.TEST].store.set_ai_cap(body.monthly_cap)
+        journal.add_event("test", "settings", f"AI monthly spending cap set to ${body.monthly_cap:,.2f}")
+        return ai_spending()
+
+    @app.get("/api/{mode}/lab", **secured)
+    def lab(mode: str):
+        """The strategy lab: rule changes in use, one waiting for your OK (Live), recent experiments."""
+        r = runner(mode)
+        test = runners[Mode.TEST]
+        if test.lab is None:
+            return {"enabled": False, "changes": [], "proposed": None, "experiments": [],
+                    "every_days": 7, "limits_note": "", "running": False}
+        running = bool(test._lab_thread and test._lab_thread.is_alive())
+        return test.lab.report(r.mode.value) | {"running": running}
+
+    @app.post("/api/live/lab", **secured)
+    def decide_lab(body: LabDecision):
+        test, live = runners[Mode.TEST], runners[Mode.LIVE]
+        if test.lab is None:
+            raise HTTPException(503, "The strategy lab isn't running on this server")
+        if not live.lock.acquire(timeout=10):
+            raise HTTPException(409, "The bot is in the middle of a check. Try again in a minute.")
+        try:
+            test.lab.approve_live() if body.decision == "approve" else test.lab.reject_live()
+        except LookupError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        finally:
+            live.lock.release()
+        return lab("live")
+
+    @app.post("/api/{mode}/lab/undo", **secured)
+    def undo_lab(mode: str):
+        r, test = runner(mode), runners[Mode.TEST]
+        if test.lab is None:
+            raise HTTPException(503, "The strategy lab isn't running on this server")
+        if not r.lock.acquire(timeout=10):
+            raise HTTPException(409, "The bot is in the middle of a check. Try again in a minute.")
+        try:
+            test.lab.undo(r.mode.value)
+        finally:
+            r.lock.release()
+        return lab(mode)
+
+    @app.post("/api/test/lab/run", **secured)
+    def run_lab():
+        """Run this week's experiment now (in the background; check back in a few minutes)."""
+        test = runners[Mode.TEST]
+        if test.lab is None:
+            raise HTTPException(503, "The strategy lab isn't running on this server")
+        if not test.lab_if_due(force=True):
+            raise HTTPException(409, "An experiment is already running")
+        return lab("test")
 
     @app.get("/api/{mode}/approvals", **secured)
     def approvals(mode: str):
@@ -762,6 +874,21 @@ def create_app(runners: dict[Mode, BotRunner], journal: Journal, token: str,
     return app
 
 
+def make_lab(store: SettingsStore, test: BotRunner, journal: Journal) -> Lab:
+    """The strategy lab, replaying the Test bot's own stock list through the backtester."""
+    from .lab import HISTORY_DAYS
+    from .market import MARKET
+    from .universe import build_universe
+
+    def history() -> dict:
+        s = store.settings_for(Mode.TEST, with_lab=False)
+        symbols = sorted(set(build_universe(s.always_watch, s.never_buy)) | {MARKET})
+        return test.broker.get_daily_bars(symbols, HISTORY_DAYS)
+
+    return Lab(store, history, lambda: store.settings_for(Mode.TEST, with_lab=False),
+               events=lambda mode, message: journal.add_event(mode, "learning", message))
+
+
 def main() -> None:
     import uvicorn
 
@@ -775,14 +902,18 @@ def main() -> None:
     journal = Journal(base.journal_path)
     store = SettingsStore(Path(base.journal_path).with_name("app_settings.json"))
 
-    analyst, ask_fn, lessons_fn = None, None, None
+    analyst, ask_fn, lessons_fn, spend = None, None, None, None
     if os.environ.get("ANTHROPIC_API_KEY"):
         import anthropic
 
         from .analyst import Analyst, ask
         from .learning import claude_lessons
 
-        client = anthropic.Anthropic()
+        from .spend import DEFAULT_MONTHLY_CAP, MeteredClient, SpendTracker
+
+        # Every Claude call is counted against the monthly cap you set in the app.
+        spend = SpendTracker(journal, lambda: store.ai_cap(DEFAULT_MONTHLY_CAP))
+        client = MeteredClient(anthropic.Anthropic(), spend)
         analyst = Analyst(client)
         ask_fn = lambda q, ctx: ask(client, q, ctx)  # noqa: E731
         lessons_fn = claude_lessons(client)
@@ -809,12 +940,14 @@ def main() -> None:
         }
         if mode is Mode.TEST:
             r.learner = learner
+            if r.broker is not None:
+                r.lab = make_lab(store, r, journal)
         if mode is Mode.LIVE and not live_enabled:
             store.update(mode, {"running": False})
         r.start_thread()
         runners[mode] = r
 
-    app = create_app(runners, journal, token, ask_fn, live_enabled, skip_results, learner)
+    app = create_app(runners, journal, token, ask_fn, live_enabled, skip_results, learner, spend)
     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", "8000")))
 
 

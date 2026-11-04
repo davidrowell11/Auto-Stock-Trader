@@ -45,6 +45,20 @@ abstract class TraderApi {
 
   /// Test only: learn from finished trades now instead of waiting for the weekly review.
   Future<Learning> learnNow();
+
+  Future<LabReport> lab(String mode);
+
+  /// Live only: use (or turn down) the rule change the strategy lab proved in Test.
+  Future<LabReport> decideLab(bool approve);
+
+  /// Back to the standard rules.
+  Future<LabReport> undoLab(String mode);
+
+  /// Test only: start this week's experiment now (it runs in the background).
+  Future<LabReport> runLab();
+
+  Future<AiSpending> aiSpending();
+  Future<AiSpending> setAiCap(double monthlyCap);
 }
 
 class HttpApi implements TraderApi {
@@ -233,6 +247,34 @@ class HttpApi implements TraderApi {
       null,
       const Duration(seconds: 90),
     ),
+  );
+
+  @override
+  Future<LabReport> lab(String mode) async =>
+      LabReport.fromJson(await _send('GET', '/api/$mode/lab'));
+
+  @override
+  Future<LabReport> decideLab(bool approve) async => LabReport.fromJson(
+    await _send('POST', '/api/live/lab', {
+      'decision': approve ? 'approve' : 'reject',
+    }),
+  );
+
+  @override
+  Future<LabReport> undoLab(String mode) async =>
+      LabReport.fromJson(await _send('POST', '/api/$mode/lab/undo'));
+
+  @override
+  Future<LabReport> runLab() async =>
+      LabReport.fromJson(await _send('POST', '/api/test/lab/run'));
+
+  @override
+  Future<AiSpending> aiSpending() async =>
+      AiSpending.fromJson(await _send('GET', '/api/ai/spending'));
+
+  @override
+  Future<AiSpending> setAiCap(double monthlyCap) async => AiSpending.fromJson(
+    await _send('PUT', '/api/ai/spending', {'monthly_cap': monthlyCap}),
   );
 
   @override

@@ -348,6 +348,10 @@ class Engine:
             sig = strategy.score_trend(symbol, history)
             if sig is None:
                 continue
+            if sig.score < self.s.min_score:
+                report.skipped.append(f"{symbol}: trend score {sig.score:.2f} is under the "
+                                      f"{self.s.min_score:.2f} minimum")
+                continue
             if symbol in self.screened:
                 sig.sources.append("screener")
                 sig.score = round(min(1.0, sig.score * self.memory.weight("screener")), 4)

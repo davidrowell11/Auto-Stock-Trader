@@ -288,6 +288,73 @@ class DemoApi implements TraderApi {
   @override
   Future<Learning> learnNow() => learning('test');
 
+  bool _labApproved = false;
+  double _aiCap = 20;
+
+  LabExperiment get _labWin => LabExperiment(
+    ts: DateTime.now().subtract(const Duration(days: 3)),
+    change: 'Safety stop distance (x average daily move): 2 → 2.5',
+    kept: true,
+    verdict: 'Passed every check; Test uses it now',
+    evidence: [
+      'AMD bought 2026-03-02: -6.8% → +2.1%',
+      'UBER bought 2026-05-11: -5.9% → not bought',
+    ],
+    unseenCurrent: {'return': 0.084, 'sharpe': 0.91, 'max_drop': 0.072},
+    unseenNew: {'return': 0.112, 'sharpe': 1.08, 'max_drop': 0.069},
+  );
+
+  @override
+  Future<LabReport> lab(String mode) async {
+    final change = LabChange(
+      label: 'Safety stop distance (x average daily move)',
+      standard: 2,
+      now: 2.5,
+    );
+    final live = mode == 'live';
+    return LabReport(
+      enabled: true,
+      running: false,
+      changes: !live || _labApproved ? [change] : [],
+      proposed: live && !_labApproved ? [change] : null,
+      proposedEntry: live && !_labApproved ? _labWin : null,
+      experiments: [
+        _labWin,
+        LabExperiment(
+          ts: DateTime.now().subtract(const Duration(days: 10)),
+          change: 'Lowest trend score it will buy: 0 → 0.2',
+          kept: false,
+          verdict: 'Better on older prices but not on the newer, unseen ones',
+          evidence: [],
+        ),
+      ],
+      everyDays: 7,
+      limitsNote: 'Stops stay within 8% of the buy price; sizes, budgets and penny rules never change.',
+    );
+  }
+
+  @override
+  Future<LabReport> decideLab(bool approve) async {
+    _labApproved = approve;
+    return lab('live');
+  }
+
+  @override
+  Future<LabReport> undoLab(String mode) => lab(mode);
+
+  @override
+  Future<LabReport> runLab() => lab('test');
+
+  @override
+  Future<AiSpending> aiSpending() async =>
+      AiSpending(enabled: true, spent: 6.42, cap: _aiCap);
+
+  @override
+  Future<AiSpending> setAiCap(double monthlyCap) async {
+    _aiCap = monthlyCap;
+    return aiSpending();
+  }
+
   @override
   Future<List<Approval>> approvals(String mode) async =>
       mode == 'live' ? List.of(_approvals) : [];

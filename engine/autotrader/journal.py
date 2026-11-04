@@ -45,6 +45,9 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE TABLE IF NOT EXISTS equity (
     ts TEXT NOT NULL, mode TEXT NOT NULL, equity REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS ai_spend (
+    ts TEXT NOT NULL, month TEXT NOT NULL, model TEXT NOT NULL, dollars REAL NOT NULL, what TEXT
+);
 CREATE TABLE IF NOT EXISTS memory (
     id INTEGER PRIMARY KEY,
     ts TEXT NOT NULL, mode TEXT NOT NULL, status TEXT NOT NULL, data TEXT NOT NULL
@@ -293,6 +296,16 @@ class Journal:
     def peak_equity(self, mode: str) -> float:
         row = self.db.execute("SELECT MAX(equity) FROM equity WHERE mode = ?", (mode,)).fetchone()
         return float(row[0]) if row and row[0] is not None else 0.0
+
+    # ----- Claude API spending (see spend.py) -----
+    def record_ai_spend(self, month: str, model: str, dollars: float, what: str) -> None:
+        with self.db:
+            self.db.execute("INSERT INTO ai_spend (ts, month, model, dollars, what) VALUES (?, ?, ?, ?, ?)",
+                            (_now(), month, model, dollars, what))
+
+    def ai_spent(self, month: str) -> float:
+        row = self.db.execute("SELECT SUM(dollars) FROM ai_spend WHERE month = ?", (month,)).fetchone()
+        return float(row[0] or 0.0)
 
     # ----- what the bot learned (see learning.py) -----
     def save_memory(self, mode: str, status: str, data: dict) -> int:

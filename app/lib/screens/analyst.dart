@@ -5,6 +5,7 @@ import '../models.dart';
 import '../state.dart';
 import '../theme.dart';
 import '../widgets.dart';
+import 'lab_card.dart';
 import 'learning_card.dart';
 
 /// The AI analyst: its scorecard, its recent calls, and a chat box.
@@ -129,6 +130,7 @@ class _AnalystScreenState extends State<AnalystScreen> {
             ),
           ),
         LearningCard(key: ValueKey(mode), mode: mode),
+        LabCard(key: ValueKey('lab-$mode'), mode: mode),
         const SectionTitle('Ask the analyst'),
         GlassCard(
           child: Column(

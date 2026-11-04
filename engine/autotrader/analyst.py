@@ -135,6 +135,10 @@ class Analyst:
 
 def plain_error(exc: Exception) -> str:
     """A Claude API failure in words the app can show, with what to do about it."""
+    from .spend import SpendingCapReached
+
+    if isinstance(exc, SpendingCapReached):
+        return str(exc)
     text = str(exc)
     status = getattr(exc, "status_code", None)
     lower = text.lower()
