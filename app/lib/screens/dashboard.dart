@@ -581,18 +581,24 @@ class _DashboardState extends State<Dashboard> {
         ],
       ),
     );
-    if (ok != true) return;
+    if (ok != true || !mounted) return;
+    ScaffoldMessenger.of(context)
+        .showSnackBar(const SnackBar(content: Text('Handing them over...')));
     String msg;
     try {
-      final names = await api.adopt(widget.mode);
-      msg = names.isEmpty
+      final r = await api.adopt(widget.mode);
+      msg = r.queued
+          ? 'The bot is in the middle of a check. It will take them over as soon as it finishes.'
+          : r.symbols.isEmpty
           ? 'Nothing to hand over'
-          : 'Now managing ${names.join(', ')}';
+          : 'Now managing ${r.symbols.join(', ')}';
     } on ApiException catch (e) {
       msg = e.message;
     }
     if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(SnackBar(content: Text(msg)));
     }
     await refresh();
   }

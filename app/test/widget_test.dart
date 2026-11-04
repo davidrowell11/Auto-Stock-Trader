@@ -34,9 +34,9 @@ void main() {
       before.cash! + before.invested! + before.otherHoldings!,
       closeTo(before.equity!, 0.01),
     );
-    expect(await api.adopt('test'), ['KO']);
+    expect((await api.adopt('test')).symbols, ['KO']);
     expect((await api.summary('test')).otherHoldings, 0);
-    expect(await api.adopt('test'), isEmpty);
+    expect((await api.adopt('test')).symbols, isEmpty);
   });
 
   test('budget changes stick per mode', () async {
