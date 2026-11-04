@@ -38,10 +38,10 @@ class AppState extends ChangeNotifier {
 
   /// Checks the address and token with the server, then saves them securely.
   Future<void> connect(String url, String token) async {
-    final candidate = HttpApi(url.trim(), token.trim());
+    final candidate = HttpApi(url, token.trim());
     await candidate.ping();
     api = candidate;
-    serverUrl = url.trim();
+    serverUrl = candidate.base;
     demo = false;
     try {
       await _storage.write(key: 'server_url', value: serverUrl);
