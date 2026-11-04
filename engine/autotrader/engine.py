@@ -224,6 +224,11 @@ class Engine:
                                    f"{expired} suggested buy{'s' if expired > 1 else ''} expired after a day")
         self.progress("Checking the account")
         account = self.broker.get_account()
+        if not self.journal.peak_equity(self.mode):  # a fresh history: start it from the broker's
+            try:
+                self.journal.seed_equity(self.mode, self.broker.equity_history(90))
+            except Exception as exc:
+                log.info("Couldn't fetch the account's past values: %s", exc)
         self.journal.record_equity(self.mode, account.equity)
         # The bot only manages stocks it bought itself; anything else in the account is yours.
         positions, self.working = self.sync_holdings(reprice=True)

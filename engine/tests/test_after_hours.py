@@ -198,6 +198,17 @@ class AfterHoursServerTests(unittest.TestCase):
         self.assertEqual(s["other_holdings"], 0)
         self.assertEqual(self.c.post("/api/test/adopt", headers=AUTH).json(), {"adopted": []})
 
+    def test_a_fallen_stock_is_not_sold_the_moment_its_handed_over(self):
+        broker = self.brokers[Mode.TEST]
+        broker.holdings["AAPL"] = (10, broker.price("AAPL") * 1.5)  # bought higher, now down a third
+        self.c.post("/api/test/adopt", headers=AUTH)
+        self.assertLess(self.journal.get_stop("test", "AAPL").stop_price, broker.price("AAPL"))
+
+    def test_never_buy_stocks_are_not_handed_over(self):
+        self.store.update(Mode.TEST, {"never_buy": ["AAPL"]})
+        self.brokers[Mode.TEST].holdings["AAPL"] = (10, 100.0)
+        self.assertEqual(self.c.post("/api/test/adopt", headers=AUTH).json(), {"adopted": []})
+
     def test_handing_over_extra_shares_keeps_the_stop(self):
         from autotrader.journal import StopState
 
@@ -210,6 +221,10 @@ class AfterHoursServerTests(unittest.TestCase):
     def test_test_buys_from_55_live_from_60(self):
         self.assertEqual(self.store.settings_for(Mode.TEST).analyst_min_confidence, 0.55)
         self.assertEqual(self.store.settings_for(Mode.LIVE).analyst_min_confidence, 0.60)
+        # A server setting can lower Test, but never Live below its hard floor.
+        with mock.patch.dict("os.environ", {"AUTOTRADER_ANALYST_MIN_CONFIDENCE": "0.5"}):
+            self.assertEqual(self.store.settings_for(Mode.TEST).analyst_min_confidence, 0.55)
+            self.assertEqual(self.store.settings_for(Mode.LIVE).analyst_min_confidence, 0.60)
 
     def test_closed_market_message(self):
         r = self.runners[Mode.TEST]

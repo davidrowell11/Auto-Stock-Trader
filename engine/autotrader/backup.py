@@ -80,7 +80,11 @@ class Backup:
         for name, (path, _) in self.sources.items():
             if path.exists() and path.stat().st_size > 0:
                 continue
-            data = self.store.get(name)
+            try:
+                data = self.store.get(name)
+            except Exception as exc:  # start without it rather than not at all
+                log.warning("Couldn't fetch %s from the database: %s", name, exc)
+                continue
             if data:
                 path.parent.mkdir(parents=True, exist_ok=True)
                 tmp = path.with_suffix(path.suffix + ".restoring")

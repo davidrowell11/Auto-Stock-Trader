@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Iterable
+from datetime import datetime
 
 from ..models import Account, Asset, Bar, OrderRequest, OrderUpdate, Position
 
@@ -35,6 +36,10 @@ class Broker(ABC):
     def latest_prices(self, symbols: Iterable[str]) -> dict[str, float]:
         """Most recent trade price for each symbol, including pre-market and after-hours trades."""
         return {}
+
+    def equity_history(self, days: int) -> list[tuple[datetime, float]]:
+        """The account's value at the end of each recent day, oldest first (if the broker keeps it)."""
+        return []
 
     def open_order_symbols(self) -> set[str]:
         """Symbols with any order (yours or the bot's) that hasn't filled yet."""
