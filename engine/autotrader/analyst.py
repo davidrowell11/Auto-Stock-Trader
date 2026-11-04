@@ -32,7 +32,8 @@ driven only by hype or social-media promotion. For penny stocks (under $5) be es
 skeptical: promotion campaigns and dilution are common.
 
 If lessons from the bot's past trades are provided, apply them: they come from how its own \
-earlier buys turned out.
+earlier buys turned out. Similar past trades, if given, are its closest earlier buys of the same \
+kind and how each ended; a poor record there is a reason for more caution, not an automatic skip.
 
 Weigh the expert signals provided: open-market insider buying and purchases by members of \
 Congress with strong track records are positives, but they are reported with a delay.

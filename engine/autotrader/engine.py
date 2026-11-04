@@ -407,6 +407,9 @@ class Engine:
             reasons = [f"Score {sig.score:.2f}", *sig.reasons, size.note]
             sources = [*sig.sources, *(["penny"] if is_penny else []),
                        *(["after_hours"] if self.extended else [])]
+            similar_note, similar = self.memory.similar_note(sources, sig.score)
+            if similar_note:
+                reasons.append(similar_note)
             if self.analyst is not None:
                 cached = self.journal.todays_view(self.mode, sig.symbol)
                 if not cached:
@@ -415,7 +418,7 @@ class Engine:
                         continue
                     reviews += 1
                     self.progress(f"Asking the AI analyst about {sig.symbol}")
-                verdict = self._analyst_verdict(sig, is_penny, cached)
+                verdict = self._analyst_verdict(sig, is_penny, cached, similar)
                 if isinstance(verdict, str):
                     report.skipped.append(f"{sig.symbol}: {verdict}")
                     self.progress(f"Skipped {sig.symbol}: {verdict}")
@@ -453,8 +456,8 @@ class Engine:
             self.journal.add_event(self.mode, "buy", f"Bought {size.qty:g} {sig.symbol} at about ${sig.price:.2f}")
             log.info("BUY %s x%s @ %.2f (stop %.2f)", sig.symbol, size.qty, sig.price, stop)
 
-    def _analyst_verdict(self, sig: Signal, is_penny: bool,
-                         cached: dict | None = None) -> AnalystView | str | None:
+    def _analyst_verdict(self, sig: Signal, is_penny: bool, cached: dict | None = None,
+                         similar: list[dict] | None = None) -> AnalystView | str | None:
         """The analyst's approval, a reason string to skip, or None if it was unavailable."""
         if cached:
             view = AnalystView(cached["action"], cached["confidence"], cached["reasoning"],
@@ -470,6 +473,7 @@ class Engine:
                     "why_the_rules_like_it": sig.reasons,
                     "recent_headlines": self.news_seen.get(sig.symbol, NewsCheck()).headlines,
                     "lessons_from_past_trades": self.memory.lessons,
+                    "similar_past_trades": similar or [],
                 })
             except AnalystUnavailable as exc:
                 log.warning("Analyst unavailable for %s: %s", sig.symbol, exc)

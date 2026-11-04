@@ -11,6 +11,12 @@ result joins its memory. Once a week the bot:
    five finished trades a source stays at 1.0.
 2. Asks Claude for a few short lessons from the finished trades. The lessons
    go into every AI analyst review from then on.
+3. Keeps its recent finished trades as cases. Before a buy, the most similar
+   past cases (same kind of sources, a similar trend score, penny or not) are
+   shown with the buy's reasons and given to the analyst, so it can see "the
+   last 4 buys like this: 1 made money". (An idea borrowed from case-based
+   agent memories such as ReasoningBank, without the vector database: a
+   handful of trade features is enough here.)
 
 What it learns can only change which stocks rank first and what the analyst
 watches out for. The analyst can only veto a buy, and nothing here touches
@@ -40,6 +46,9 @@ MIN_TRADES_FOR_WEIGHT = 5
 WEIGHT_MIN, WEIGHT_MAX = 0.7, 1.3
 MAX_LESSONS = 6
 MAX_OUTCOMES_SHOWN = 60
+MAX_CASES = 200  # finished trades kept for "similar past trades"
+SIMILAR_K = 5
+SIMILAR_MAX_DISTANCE = 0.8
 
 # Sources whose weight the bot adjusts, and how each appears in the app.
 WEIGHTED = {"insider": "Insider buying", "congress": "Congress members' buys",
@@ -59,6 +68,7 @@ class Outcome:
     sell_price: float
     sources: list[str]
     sell_reason: str
+    score: float | None = None  # the trend score when it was bought
 
     @property
     def ret(self) -> float:
@@ -71,7 +81,27 @@ class Outcome:
     def as_dict(self) -> dict:
         return {"symbol": self.symbol, "mode": self.mode, "bought": self.bought[:10],
                 "sold": self.sold[:10], "days_held": self.days, "return": round(self.ret, 4),
-                "sources": self.sources, "sell_reason": self.sell_reason}
+                "sources": self.sources, "sell_reason": self.sell_reason, "score": self.score}
+
+
+def _score_of(reasons: list[str]) -> float | None:
+    for r in reasons:
+        if r.startswith("Score "):
+            try:
+                return float(r.split()[1])
+            except (IndexError, ValueError):
+                return None
+    return None
+
+
+def distance(a_sources, a_score, b_sources, b_score) -> float:
+    """0 for the same kind of buy; about 1 or more for unrelated ones."""
+    a, b = set(a_sources) - {"trend"}, set(b_sources) - {"trend"}
+    penny = ("penny" in a) != ("penny" in b)
+    union = a | b
+    overlap = len(a & b) / len(union) if union else 1.0
+    gap = abs(a_score - b_score) if a_score is not None and b_score is not None else 0.25
+    return round((1 - overlap) * 0.6 + gap * 2 + penny * 1.0, 4)
 
 
 @dataclass
@@ -79,6 +109,22 @@ class Memory:
     """What the engine uses: source weights for ranking and lessons for the analyst."""
     weights: dict[str, float] = field(default_factory=dict)
     lessons: list[str] = field(default_factory=list)
+    cases: list[dict] = field(default_factory=list)  # finished trades, as Outcome.as_dict()
+
+    def similar(self, sources: list[str], score: float) -> list[dict]:
+        """The closest past finished trades to a buy like this one, nearest first."""
+        scored = sorted(((distance(sources, score, c.get("sources", []), c.get("score")), c)
+                         for c in self.cases), key=lambda x: x[0])
+        return [c for d, c in scored if d <= SIMILAR_MAX_DISTANCE][:SIMILAR_K]
+
+    def similar_note(self, sources: list[str], score: float) -> tuple[str | None, list[dict]]:
+        """("Similar past trades: 1 of 4 made money (avg -2.1%)", the cases), or (None, []) with too few."""
+        cases = self.similar(sources, score)
+        if len(cases) < 2:
+            return None, []
+        wins = sum(c["return"] > 0 for c in cases)
+        avg = sum(c["return"] for c in cases) / len(cases)
+        return f"Similar past trades: {wins} of {len(cases)} made money (avg {avg:+.1%})", cases
 
     def weight(self, source: str) -> float:
         return float(self.weights.get(source, 1.0))
@@ -89,7 +135,8 @@ class Memory:
             return cls()
         weights = {k: min(WEIGHT_MAX, max(WEIGHT_MIN, float(v)))
                    for k, v in record.get("weights", {}).items() if k in WEIGHTED}
-        return cls(weights, [str(x) for x in record.get("lessons", [])][:MAX_LESSONS])
+        return cls(weights, [str(x) for x in record.get("lessons", [])][:MAX_LESSONS],
+                   [c for c in record.get("cases", []) if isinstance(c, dict) and "return" in c])
 
 
 def outcomes(journal: Journal, mode: str) -> list[Outcome]:
@@ -107,7 +154,8 @@ def outcomes(journal: Journal, mode: str) -> list[Outcome]:
         if reason in NOT_THE_BOTS_CALL:
             continue
         out.append(Outcome(mode, t["symbol"], buy["ts"], t["ts"], float(buy["price"]),
-                           float(t["price"]), list(buy["sources"]), reason))
+                           float(t["price"]), list(buy["sources"]), reason,
+                           _score_of(buy["reasons"])))
     return out
 
 
@@ -219,6 +267,7 @@ class Learner:
             "learned_at": self._last_try.isoformat(timespec="seconds"),
             "weights": weights, "lessons": lessons, "trades": len(results), "wins": wins,
             "lessons_error": lessons_error,
+            "cases": [o.as_dict() for o in results[-MAX_CASES:]],
             "stats": {s: {**st, "label": LABELS.get(s, s)} for s, st in stats.items()},
         }
         self.journal.save_memory("test", "active", record)
@@ -230,6 +279,9 @@ class Learner:
         if _same(live, record) or (live is None and _changes_nothing(record)):
             if stale is not None:  # Live already has (or doesn't need) this
                 self.journal.set_memory_status(stale["id"], "replaced")
+            if live is not None:  # same rules; just bring its record of past trades up to date
+                kept = {k: v for k, v in live.items() if k not in ("id", "ts")}
+                self.journal.save_memory("live", "active", {**kept, "cases": record["cases"]})
         elif _same(stale, record) or _same(turned_down, record):
             pass  # already waiting for you, or you said no to exactly this
         else:

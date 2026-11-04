@@ -164,6 +164,41 @@ class LearnerTests(unittest.TestCase):
             self.learner.learn()
 
 
+class SimilarTradesTests(unittest.TestCase):
+    def test_finds_buys_of_the_same_kind(self):
+        j = Journal()
+        for i, sell in enumerate([90, 95, 104]):
+            j.record_trade("test", f"G{i}", "buy", 1, 100, None, ["Score 0.60"], ["trend", "screener"])
+            j.record_trade("test", f"G{i}", "sell", 1, sell, None, ["Hit stop"])
+        j.record_trade("test", "INS", "buy", 1, 100, None, ["Score 0.90"], ["trend", "insider"])
+        j.record_trade("test", "INS", "sell", 1, 130, None, ["Trend broke"])
+        record = Learner(j).learn()
+        m = Memory.from_record(record)
+        note, cases = m.similar_note(["trend", "screener"], 0.62)
+        self.assertEqual({c["symbol"] for c in cases}, {"G0", "G1", "G2"})
+        self.assertIn("1 of 3 made money", note)
+        self.assertEqual(m.similar_note(["trend", "penny"], 0.2), (None, []))  # nothing like it yet
+
+    def test_shown_with_the_buy_and_given_to_the_analyst(self):
+        seen = {}
+
+        class FakeAnalyst:
+            def review(self, candidate):
+                seen[candidate["symbol"]] = candidate
+                from autotrader.analyst import AnalystView
+                return AnalystView("buy", 0.9, "fine", [])
+
+        cases = [{"symbol": f"X{i}", "sources": ["trend"], "score": None, "return": -0.05}
+                 for i in range(3)]
+        j = Journal()
+        broker = SlowBroker(100_000, {"AAPL": make_bars(uptrend()), MARKET: make_bars(uptrend())})
+        Engine(broker, Settings().clamped(), j, analyst=FakeAnalyst(),
+               memory=lambda: Memory(cases=cases)).run_cycle()
+        self.assertEqual(len(seen["AAPL"]["similar_past_trades"]), 3)
+        buy = [t for t in j.trades("test") if t["side"] == "buy"][0]
+        self.assertTrue(any(r.startswith("Similar past trades: 0 of 3") for r in buy["reasons"]))
+
+
 class EngineMemoryTests(unittest.TestCase):
     def setUp(self):
         self.broker = SlowBroker(100_000, {"AAPL": make_bars(uptrend()), MARKET: make_bars(uptrend()),
