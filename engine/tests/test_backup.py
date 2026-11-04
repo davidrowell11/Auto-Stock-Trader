@@ -64,6 +64,25 @@ class BackupTests(unittest.TestCase):
         b.restore()
         self.assertEqual(settings.read_text(), "local")
 
+    def test_published_the_database_copy_beats_the_workspace_file(self):
+        # A Replit publish starts the app with the workspace's files, not the bot's own.
+        holder = [None]
+        path, settings, b = self.make(holder)
+        b.database_wins = True
+        settings.parent.mkdir(parents=True)
+        settings.write_text("stale workspace copy")
+        self.store.files["app_settings.json"] = b"the bot's real settings"
+        self.assertIn("app_settings.json", b.restore())
+        self.assertEqual(settings.read_text(), "the bot's real settings")
+        self.assertEqual(b.save(), [])  # what it just restored isn't copied back
+
+    def test_published_uses_the_database_copy(self):
+        with mock.patch.object(backup, "PostgresStore", lambda url: self.store):
+            with mock.patch.dict("os.environ", {"DATABASE_URL": "x", "REPLIT_DEPLOYMENT": "1"}):
+                self.assertTrue(backup.from_environment(Path("j"), Path("s"), lambda: b"").database_wins)
+            with mock.patch.dict("os.environ", {"DATABASE_URL": "x"}, clear=True):
+                self.assertFalse(backup.from_environment(Path("j"), Path("s"), lambda: b"").database_wins)
+
     def test_a_database_error_at_start_never_stops_the_bot(self):
         _, _, b = self.make([None])
         self.store.get = mock.Mock(side_effect=RuntimeError("timeout"))
