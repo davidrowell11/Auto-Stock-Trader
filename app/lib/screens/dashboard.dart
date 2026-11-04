@@ -345,6 +345,15 @@ class _DashboardState extends State<Dashboard> {
               ),
             ],
           ),
+          if ((s.otherHoldings ?? 0) >= 1)
+            Padding(
+              padding: const EdgeInsets.only(top: 10),
+              child: Text(
+                'Plus ${moneyRound.format(s.otherHoldings)} in stocks the bot '
+                "didn't buy. It leaves those alone and doesn't count them as invested.",
+                style: t.bodySmall?.copyWith(color: AppColors.muted),
+              ),
+            ),
           const SizedBox(height: 12),
           Row(
             children: [

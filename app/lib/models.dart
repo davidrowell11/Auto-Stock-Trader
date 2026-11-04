@@ -19,6 +19,7 @@ class Summary {
     this.todayChange,
     this.todayChangePct,
     this.invested,
+    this.otherHoldings,
     this.positions,
     this.marketOpen,
     this.session,
@@ -37,6 +38,9 @@ class Summary {
   final bool liveEnabled;
   final int pendingApprovals;
   final double? equity, cash, todayChange, todayChangePct, invested;
+
+  /// Stocks in the account the bot didn't buy (it leaves them alone).
+  final double? otherHoldings;
   final int? positions;
   final bool? marketOpen;
   final String? session; // regular, pre (4am-9:30am), after (4pm-8pm) or closed
@@ -61,6 +65,7 @@ class Summary {
     todayChange: _dn(j['today_change']),
     todayChangePct: _dn(j['today_change_pct']),
     invested: _dn(j['invested']),
+    otherHoldings: _dn(j['other_holdings']),
     positions: (j['positions'] as num?)?.toInt(),
     marketOpen: j['market_open'] as bool?,
     session: j['session'] as String?,

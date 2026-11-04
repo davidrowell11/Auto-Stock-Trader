@@ -88,6 +88,7 @@ class DemoApi implements TraderApi {
       todayChange: last - prev,
       todayChangePct: last / prev - 1,
       invested: last * 0.68,
+      otherHoldings: 0,
       positions: (await positions(mode)).length,
       marketOpen: true,
       session: 'regular',

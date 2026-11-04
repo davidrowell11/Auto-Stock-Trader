@@ -172,6 +172,17 @@ class AfterHoursServerTests(unittest.TestCase):
         self.assertEqual(s["session"], "after")
         self.assertFalse(s["market_open"])
 
+    def test_summary_counts_stocks_the_bot_did_not_buy(self):
+        self.brokers[Mode.TEST].holdings["AAPL"] = (10, 100.0)  # bought by hand, not the bot
+        s = self.c.get("/api/test/summary", headers=AUTH).json()
+        self.assertEqual(s["invested"], 0)
+        self.assertGreater(s["other_holdings"], 0)
+        self.assertAlmostEqual(s["cash"] + s["invested"] + s["other_holdings"], s["equity"], places=2)
+
+    def test_test_buys_from_55_live_from_60(self):
+        self.assertEqual(self.store.settings_for(Mode.TEST).analyst_min_confidence, 0.55)
+        self.assertEqual(self.store.settings_for(Mode.LIVE).analyst_min_confidence, 0.60)
+
     def test_closed_market_message(self):
         r = self.runners[Mode.TEST]
         self.brokers[Mode.TEST].session = "closed"

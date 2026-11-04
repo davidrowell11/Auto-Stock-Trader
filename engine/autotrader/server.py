@@ -46,6 +46,8 @@ from .universe import sector_of
 
 log = logging.getLogger("autotrader.server")
 
+TEST_ANALYST_MIN = 0.55
+LIVE_ANALYST_MIN = 0.60
 EDITABLE = ("budget", "approve_mode", "always_watch", "never_buy", "after_hours_buys",
             "quick_reviews")
 
@@ -102,6 +104,11 @@ class SettingsStore:
         overrides.setdefault("after_hours_buys", mode is Mode.TEST)
         # Cheaper AI reviews too: tried in Test first; switch on for Live in the app.
         overrides.setdefault("quick_reviews", mode is Mode.TEST)
+        # How sure the analyst must be: an honest swing-trade edge is about 55%, so Test buys
+        # from 55%. Live keeps the stricter 60% (David's choice, 2026-11-04).
+        if not os.environ.get("AUTOTRADER_ANALYST_MIN_CONFIDENCE"):  # a server setting wins
+            overrides["analyst_min_confidence"] = (TEST_ANALYST_MIN if mode is Mode.TEST
+                                                   else LIVE_ANALYST_MIN)
         if mode is Mode.LIVE:
             # Start small: never more than the starter cap of real money, whatever the file says.
             # Live never falls back to the whole account: without a saved cap it stays at the starter cap.
@@ -583,11 +590,15 @@ def create_app(runners: dict[Mode, BotRunner], journal: Journal, token: str,
             positions = bot_positions(r.broker, journal, r.mode.value)
             session = r.session()
             market_open = session == "regular"
+            invested = sum(p.market_value for p in positions)
             out.update({
                 "equity": acct.equity, "cash": acct.cash,
                 "today_change": acct.equity - acct.last_equity,
                 "today_change_pct": (acct.equity / acct.last_equity - 1) if acct.last_equity else 0.0,
-                "invested": sum(p.market_value for p in positions),
+                "invested": invested,
+                # Stocks in the account the bot didn't buy: it never sells or counts them,
+                # so this is what makes cash + invested add up to the account value.
+                "other_holdings": max(0.0, round(acct.equity - acct.cash - invested, 2)),
                 "positions": len(positions), "market_open": market_open, "session": session,
             })
         return out
