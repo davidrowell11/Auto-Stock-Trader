@@ -35,6 +35,7 @@ class ExpertSignals:
     congress_buys: list[CongressTrade] = field(default_factory=list)
     boost: float = 0.0
     reasons: list[str] = field(default_factory=list)
+    boosts: dict[str, float] = field(default_factory=dict)  # per source, e.g. {"insider": 0.1}
 
 
 def price_lookup(bars: dict[str, list[Bar]]):
@@ -89,16 +90,16 @@ class SignalBook:
 
         sig = ExpertSignals(insider=insider, congress_buys=congress)
         if insider.buyers and insider.total_value >= INSIDER_MIN_VALUE:
-            sig.boost += min(INSIDER_BOOST_MAX, INSIDER_BOOST_PER_BUYER * len(insider.buyers))
+            sig.boosts["insider"] = min(INSIDER_BOOST_MAX, INSIDER_BOOST_PER_BUYER * len(insider.buyers))
             sig.reasons.append(insider.summary)
         if congress:
-            sig.boost += min(CONGRESS_BOOST_MAX, CONGRESS_BOOST_PER_BUY * len(congress))
+            sig.boosts["congress"] = min(CONGRESS_BOOST_MAX, CONGRESS_BOOST_PER_BUY * len(congress))
             for t in congress[:3]:
                 rec = self.leaderboard[t.member]
                 sig.reasons.append(
                     f"{t.member} bought on {t.traded} (reported {t.reported}); their past buys "
                     f"rose {rec.hit_rate:.0%} of the time, averaging {rec.avg_return:+.1%}"
                 )
-        sig.boost = min(sig.boost, TOTAL_BOOST_MAX)
+        sig.boost = min(sum(sig.boosts.values()), TOTAL_BOOST_MAX)
         self._cache[symbol] = sig
         return sig

@@ -38,6 +38,27 @@ abstract class TraderApi {
   });
   Future<String> ask(String question, String mode);
   Future<Readiness> readiness();
+  Future<Learning> learning(String mode);
+
+  /// Live only: use (or turn down) the lessons Test learned.
+  Future<Learning> decideLearning(bool approve);
+
+  /// Test only: learn from finished trades now instead of waiting for the weekly review.
+  Future<Learning> learnNow();
+
+  Future<LabReport> lab(String mode);
+
+  /// Live only: use (or turn down) the rule change the strategy lab proved in Test.
+  Future<LabReport> decideLab(bool approve);
+
+  /// Back to the standard rules.
+  Future<LabReport> undoLab(String mode);
+
+  /// Test only: start this week's experiment now (it runs in the background).
+  Future<LabReport> runLab();
+
+  Future<AiSpending> aiSpending();
+  Future<AiSpending> setAiCap(double monthlyCap);
 }
 
 class HttpApi implements TraderApi {
@@ -205,6 +226,56 @@ class HttpApi implements TraderApi {
   @override
   Future<Readiness> readiness() async =>
       Readiness.fromJson(await _send('GET', '/api/readiness'));
+
+  @override
+  Future<Learning> learning(String mode) async =>
+      Learning.fromJson(await _send('GET', '/api/$mode/learning'));
+
+  @override
+  Future<Learning> decideLearning(bool approve) async => Learning.fromJson(
+    await _send('POST', '/api/live/learning', {
+      'decision': approve ? 'approve' : 'reject',
+    }),
+  );
+
+  @override
+  Future<Learning> learnNow() async => Learning.fromJson(
+    // Writing the lessons asks Claude, which can take a little while.
+    await _send(
+      'POST',
+      '/api/test/learning/run',
+      null,
+      const Duration(seconds: 90),
+    ),
+  );
+
+  @override
+  Future<LabReport> lab(String mode) async =>
+      LabReport.fromJson(await _send('GET', '/api/$mode/lab'));
+
+  @override
+  Future<LabReport> decideLab(bool approve) async => LabReport.fromJson(
+    await _send('POST', '/api/live/lab', {
+      'decision': approve ? 'approve' : 'reject',
+    }),
+  );
+
+  @override
+  Future<LabReport> undoLab(String mode) async =>
+      LabReport.fromJson(await _send('POST', '/api/$mode/lab/undo'));
+
+  @override
+  Future<LabReport> runLab() async =>
+      LabReport.fromJson(await _send('POST', '/api/test/lab/run'));
+
+  @override
+  Future<AiSpending> aiSpending() async =>
+      AiSpending.fromJson(await _send('GET', '/api/ai/spending'));
+
+  @override
+  Future<AiSpending> setAiCap(double monthlyCap) async => AiSpending.fromJson(
+    await _send('PUT', '/api/ai/spending', {'monthly_cap': monthlyCap}),
+  );
 
   @override
   Future<String> ask(String question, String mode) async =>

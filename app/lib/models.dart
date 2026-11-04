@@ -266,10 +266,13 @@ class AnalystView {
     required this.action,
     required this.confidence,
     required this.reasoning,
+    this.model,
   });
   final String day, symbol, action, reasoning;
   final double price, confidence;
+  final String? model; // which Claude model reviewed it
   bool get isBuy => action == 'buy';
+  bool get isQuick => model?.contains('haiku') ?? false;
   factory AnalystView.fromJson(Map<String, dynamic> j) => AnalystView(
     day: j['day'] as String,
     symbol: j['symbol'] as String,
@@ -277,6 +280,7 @@ class AnalystView {
     action: j['action'] as String,
     confidence: _d(j['confidence']),
     reasoning: j['reasoning'] as String,
+    model: j['model'] as String?,
   );
 }
 
@@ -285,13 +289,16 @@ class AnalystFeed {
     required this.views,
     required this.total,
     required this.approved,
+    this.quick = 0,
   });
   final List<AnalystView> views;
   final int total, approved;
+  final int quick; // reviews the fast, cheaper model settled on its own
   factory AnalystFeed.fromJson(Map<String, dynamic> j) => AnalystFeed(
     views: [for (final v in j['views'] as List) AnalystView.fromJson(v)],
     total: (j['total'] as num).toInt(),
     approved: (j['approved'] as num).toInt(),
+    quick: (j['quick'] as num?)?.toInt() ?? 0,
   );
 }
 
@@ -333,8 +340,10 @@ class BotSettings {
     required this.dailyLossPct,
     required this.cashReservePct,
     this.afterHoursBuys = false,
+    this.quickReviews = false,
   });
   final double? budget;
+  final bool quickReviews; // a fast, cheaper model reviews first; close calls get the full analyst
   final bool approveMode;
   final bool afterHoursBuys; // new buys in pre-market and after hours
   final List<String> alwaysWatch, neverBuy;
@@ -350,6 +359,7 @@ class BotSettings {
     dailyLossPct: _d(j['daily_loss_pct']),
     cashReservePct: _d(j['cash_reserve_pct']),
     afterHoursBuys: j['after_hours_buys'] as bool? ?? false,
+    quickReviews: j['quick_reviews'] as bool? ?? false,
   );
 }
 
@@ -386,5 +396,163 @@ class PriceBar {
     _d(j['l']),
     _d(j['c']),
     _d(j['v']),
+  );
+}
+
+/// One version of what the bot learned from its finished trades.
+class LearnedMemory {
+  LearnedMemory({
+    required this.ts,
+    required this.lessons,
+    required this.trades,
+    required this.wins,
+    required this.weights,
+    this.lessonsError,
+  });
+  final DateTime ts;
+  final List<String> lessons;
+
+  /// Why new lessons couldn't be written last time (e.g. the analyst was out of credits).
+  final String? lessonsError;
+  final int trades, wins;
+
+  /// How much each idea source counts when ranking buys (1.0 = unchanged).
+  final List<({String label, double weight})> weights;
+
+  factory LearnedMemory.fromJson(Map<String, dynamic> j) => LearnedMemory(
+    ts: DateTime.parse(j['ts'] as String),
+    lessons: [for (final l in j['lessons'] as List) l.toString()],
+    lessonsError: j['lessons_error'] as String?,
+    trades: (j['trades'] as num).toInt(),
+    wins: (j['wins'] as num).toInt(),
+    weights: [
+      for (final w in j['weights'] as List)
+        (label: w['label'] as String, weight: (w['weight'] as num).toDouble()),
+    ],
+  );
+}
+
+/// The "What the bot learned" card: the memory in use and, in Live, a new one waiting for your OK.
+class Learning {
+  Learning({
+    this.active,
+    this.proposed,
+    required this.finishedTrades,
+    required this.needs,
+    required this.everyDays,
+  });
+  final LearnedMemory? active, proposed;
+  final int finishedTrades, needs, everyDays;
+
+  factory Learning.fromJson(Map<String, dynamic> j) => Learning(
+    active: j['active'] == null ? null : LearnedMemory.fromJson(j['active']),
+    proposed: j['proposed'] == null
+        ? null
+        : LearnedMemory.fromJson(j['proposed']),
+    finishedTrades: (j['finished_trades'] as num).toInt(),
+    needs: (j['needs'] as num).toInt(),
+    everyDays: (j['every_days'] as num).toInt(),
+  );
+}
+
+/// One rule the strategy lab changed from the standard rules.
+class LabChange {
+  LabChange({required this.label, required this.standard, required this.now});
+  final String label;
+  final double standard, now;
+  factory LabChange.fromJson(Map<String, dynamic> j) => LabChange(
+    label: j['label'] as String,
+    standard: _d(j['standard']),
+    now: _d(j['now']),
+  );
+}
+
+/// One weekly experiment: the idea, whether it was kept, and why.
+class LabExperiment {
+  LabExperiment({
+    required this.ts,
+    required this.change,
+    required this.kept,
+    required this.verdict,
+    required this.evidence,
+    this.unseenCurrent,
+    this.unseenNew,
+  });
+  final DateTime ts;
+  final String change, verdict;
+  final bool kept;
+  final List<String> evidence;
+
+  /// Results on the newer prices it wasn't tuned on: return, sharpe, max_drop.
+  final Map<String, dynamic>? unseenCurrent, unseenNew;
+
+  factory LabExperiment.fromJson(Map<String, dynamic> j) {
+    final unseen = j['unseen'] as Map<String, dynamic>?;
+    return LabExperiment(
+      ts: DateTime.parse(j['ts'] as String),
+      change: j['change'] as String,
+      kept: j['kept'] as bool? ?? false,
+      verdict: j['verdict'] as String? ?? '',
+      evidence: [for (final e in (j['evidence'] as List?) ?? []) e.toString()],
+      unseenCurrent: unseen?['current'] as Map<String, dynamic>?,
+      unseenNew: unseen?['new'] as Map<String, dynamic>?,
+    );
+  }
+}
+
+class LabReport {
+  LabReport({
+    required this.enabled,
+    required this.running,
+    required this.changes,
+    this.proposed,
+    this.proposedEntry,
+    required this.experiments,
+    required this.everyDays,
+    required this.limitsNote,
+  });
+  final bool enabled, running;
+  final List<LabChange> changes;
+  final List<LabChange>? proposed;
+  final LabExperiment? proposedEntry;
+  final List<LabExperiment> experiments;
+  final int everyDays;
+  final String limitsNote;
+
+  factory LabReport.fromJson(Map<String, dynamic> j) {
+    final p = j['proposed'] as Map<String, dynamic>?;
+    final entry = p?['entry'] as Map<String, dynamic>?;
+    return LabReport(
+      enabled: j['enabled'] as bool? ?? false,
+      running: j['running'] as bool? ?? false,
+      changes: [
+        for (final c in (j['changes'] as List?) ?? []) LabChange.fromJson(c),
+      ],
+      proposed: p == null
+          ? null
+          : [for (final c in p['changes'] as List) LabChange.fromJson(c)],
+      proposedEntry: entry != null && entry['ts'] != null
+          ? LabExperiment.fromJson(entry)
+          : null,
+      experiments: [
+        for (final e in (j['experiments'] as List?) ?? [])
+          LabExperiment.fromJson(e),
+      ],
+      everyDays: (j['every_days'] as num?)?.toInt() ?? 7,
+      limitsNote: j['limits_note'] as String? ?? '',
+    );
+  }
+}
+
+/// What the AI analyst has cost this month and the cap.
+class AiSpending {
+  AiSpending({required this.enabled, required this.spent, this.cap});
+  final bool enabled;
+  final double spent;
+  final double? cap;
+  factory AiSpending.fromJson(Map<String, dynamic> j) => AiSpending(
+    enabled: j['enabled'] as bool? ?? false,
+    spent: _d(j['spent']),
+    cap: _dn(j['cap']),
   );
 }

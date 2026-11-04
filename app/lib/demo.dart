@@ -27,6 +27,7 @@ class DemoApi implements TraderApi {
       dailyLossPct: 0.02,
       cashReservePct: 0.10,
       afterHoursBuys: true,
+      quickReviews: true,
     ),
     'live': BotSettings(
       budget: 1000,
@@ -249,7 +250,109 @@ class DemoApi implements TraderApi {
         reasoning: 'Momentum is strong, three insiders bought on the open market, and recent news is positive.',
       ),
     ];
-    return AnalystFeed(views: views, total: 42, approved: 29);
+    return AnalystFeed(views: views, total: 42, approved: 29, quick: 31);
+  }
+
+  late final _memory = LearnedMemory(
+    ts: DateTime.now().subtract(const Duration(days: 2)),
+    lessons: [
+      'Stocks bought the day after a 15%+ jump on the gainers list usually gave the gain back; be wary of chasing them.',
+      'Buys backed by several insiders held up best, even in choppy weeks.',
+      'Most losing trades were sold for "trend broke" within a week; a fresh breakout that fails fast is a warning sign.',
+    ],
+    trades: 23,
+    wins: 14,
+    weights: [
+      (label: 'Insider buying', weight: 1.12),
+      (label: "Congress members' buys", weight: 1.0),
+      (label: "Today's most active and top gainers", weight: 0.86),
+    ],
+  );
+  bool _liveApproved = false;
+
+  @override
+  Future<Learning> learning(String mode) async => Learning(
+    active: mode == 'test' || _liveApproved ? _memory : null,
+    proposed: mode == 'live' && !_liveApproved ? _memory : null,
+    finishedTrades: mode == 'test' ? 23 : 0,
+    needs: 0,
+    everyDays: 7,
+  );
+
+  @override
+  Future<Learning> decideLearning(bool approve) async {
+    _liveApproved = approve;
+    return learning('live');
+  }
+
+  @override
+  Future<Learning> learnNow() => learning('test');
+
+  bool _labApproved = false;
+  double _aiCap = 20;
+
+  LabExperiment get _labWin => LabExperiment(
+    ts: DateTime.now().subtract(const Duration(days: 3)),
+    change: 'Safety stop distance (x average daily move): 2 → 2.5',
+    kept: true,
+    verdict: 'Passed every check; Test uses it now',
+    evidence: [
+      'AMD bought 2026-03-02: -6.8% → +2.1%',
+      'UBER bought 2026-05-11: -5.9% → not bought',
+    ],
+    unseenCurrent: {'return': 0.084, 'sharpe': 0.91, 'max_drop': 0.072},
+    unseenNew: {'return': 0.112, 'sharpe': 1.08, 'max_drop': 0.069},
+  );
+
+  @override
+  Future<LabReport> lab(String mode) async {
+    final change = LabChange(
+      label: 'Safety stop distance (x average daily move)',
+      standard: 2,
+      now: 2.5,
+    );
+    final live = mode == 'live';
+    return LabReport(
+      enabled: true,
+      running: false,
+      changes: !live || _labApproved ? [change] : [],
+      proposed: live && !_labApproved ? [change] : null,
+      proposedEntry: live && !_labApproved ? _labWin : null,
+      experiments: [
+        _labWin,
+        LabExperiment(
+          ts: DateTime.now().subtract(const Duration(days: 10)),
+          change: 'Lowest trend score it will buy: 0 → 0.2',
+          kept: false,
+          verdict: 'Better on older prices but not on the newer, unseen ones',
+          evidence: [],
+        ),
+      ],
+      everyDays: 7,
+      limitsNote: 'Stops stay within 8% of the buy price; sizes, budgets and penny rules never change.',
+    );
+  }
+
+  @override
+  Future<LabReport> decideLab(bool approve) async {
+    _labApproved = approve;
+    return lab('live');
+  }
+
+  @override
+  Future<LabReport> undoLab(String mode) => lab(mode);
+
+  @override
+  Future<LabReport> runLab() => lab('test');
+
+  @override
+  Future<AiSpending> aiSpending() async =>
+      AiSpending(enabled: true, spent: 6.42, cap: _aiCap);
+
+  @override
+  Future<AiSpending> setAiCap(double monthlyCap) async {
+    _aiCap = monthlyCap;
+    return aiSpending();
   }
 
   @override
@@ -282,6 +385,7 @@ class DemoApi implements TraderApi {
       dailyLossPct: s.dailyLossPct,
       cashReservePct: s.cashReservePct,
       afterHoursBuys: changes['after_hours_buys'] as bool? ?? s.afterHoursBuys,
+      quickReviews: changes['quick_reviews'] as bool? ?? s.quickReviews,
     );
   }
 

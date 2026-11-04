@@ -8,8 +8,11 @@ look everywhere. It connects to the bot server in `../engine`.
 * **Test**: fake-money trading, budget slider, holdings, activity, weekly report.
 * **Live**: real money, locked behind Face ID / fingerprint, approvals for
   trades in approve mode, Live budget cap, kill switch.
-* **Analyst**: the AI analyst's scorecard, recent calls, and a chat to ask it questions.
-* **Settings**: approve mode, always-watch and never-buy lists, safety rules, theme.
+* **Analyst**: the AI analyst's scorecard, recent calls (quick reviews are
+  labelled), a chat to ask it questions, **What the bot learned** and the
+  **Strategy lab**, with Live approvals for both.
+* **Settings**: approve mode, trading hours, AI analyst costs (cheaper reviews,
+  monthly spending cap), always-watch and never-buy lists, safety rules, theme.
 
 Tap "Explore with sample data first" on the connect screen to try it
 without a server.

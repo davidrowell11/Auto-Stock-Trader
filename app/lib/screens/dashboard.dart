@@ -1104,6 +1104,7 @@ class _DashboardState extends State<Dashboard> {
       'sell' => (Icons.north_east_rounded, AppColors.loss),
       'approval' => (Icons.how_to_reg_rounded, AppColors.live),
       'kill' => (Icons.power_settings_new_rounded, AppColors.loss),
+      'learning' => (Icons.psychology_rounded, AppColors.accent),
       _ => (Icons.tune_rounded, AppColors.muted),
     };
     return ListTile(

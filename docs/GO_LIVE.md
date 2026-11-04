@@ -14,7 +14,7 @@ computer's environment variables). Never paste them into chat, the app or code.
   | `ALPACA_TEST_KEY_ID`, `ALPACA_TEST_SECRET_KEY` | Alpaca paper keys |
   | `AUTOTRADER_APP_TOKEN` | A long random password the app uses to talk to the bot |
   | `AUTOTRADER_SEC_CONTACT` | Your email (the SEC asks programs to identify themselves) |
-  | `ANTHROPIC_API_KEY` | Claude API key for the AI analyst (pay as you go) |
+  | `ANTHROPIC_API_KEY` | Claude API key for the AI analyst (pay as you go; see below) |
   | `QUIVER_API_TOKEN` | Optional: Congress trades (paid) |
   | `FINNHUB_API_KEY` | Optional: free key for the earnings calendar |
 
@@ -23,6 +23,14 @@ computer's environment variables). Never paste them into chat, the app or code.
 - [ ] Open `https://<your-app>.replit.app/health` and check it says `{"ok": true}`.
 - [ ] In the app, connect with the server address and `AUTOTRADER_APP_TOKEN`.
 - [ ] On the Test tab, set the budget and press **Start bot**.
+
+**About the Claude API key.** API credits are bought at
+[console.anthropic.com](https://console.anthropic.com) under **Plans & Billing**,
+separately from a Claude.ai subscription. Make the key in the same Console
+organization that has the credits. In the app's **Settings > AI analyst costs**
+you'll see this month's spending and a monthly cap ($20 to start). At the cap
+the analyst pauses until the 1st: no penny-stock buys, other buys on the rules
+alone. Cheaper reviews (on for Test) cut the cost of most reviews a lot.
 
 ## Phase 2: Let it prove itself (8+ weeks)
 
@@ -45,6 +53,21 @@ results as necessary, not as a promise.
 - [ ] Keep **Approve each trade** on. Every real buy waits for your tap; protective sells never wait.
 - [ ] Unlock Live with Face ID or fingerprint and press **Start bot**.
 
+## Letting Live use what Test learned
+
+Test changes itself as it learns. Live never does without you:
+
+- **What the bot learned** (AI analyst screen): about once a week Test writes
+  new lessons and adjusts how much each idea source counts. Live shows them
+  with **Use in Live** or **Not now**.
+- **Strategy lab** (same screen): when a rule change passes every test, Test
+  uses it and Live asks first. **Undo** goes back to the standard rules.
+- **Cheaper AI reviews** and **after-hours buying** (Settings): on for Test,
+  off for Live until you switch them on.
+
+A good habit: approve a change for Live only after Test has used it for a
+couple of weeks without surprises.
+
 ## Safety nets that are always on
 
 | Net | What happens |
@@ -57,6 +80,8 @@ results as necessary, not as a promise.
 | Earnings guard | No buys in the week before a company reports earnings. |
 | Cool-off | After a stock is sold to protect you (stop or trend break), the bot won't buy it again for a week. |
 | Approvals expire | A suggested buy expires after 24 hours, and the rules are checked again when you approve it. |
+| Learning limits | What the bot learns can only change which stocks rank first, what the analyst watches for, and (via the lab) the stop distance or minimum trend score within the hard limits. Budgets, position sizes and penny rules never change. |
+| AI spending cap | The analyst pauses for the rest of the month at your cap. |
 
 ## When to stop and look (rollback triggers)
 
@@ -76,8 +101,9 @@ Press the kill switch, or Stop, if any of these happen:
 ## Backups
 
 The trade journal lives in `engine/data/journal.sqlite3`, and app settings in
-`engine/data/app_settings.json`. Download a copy from Replit now and then. If
-the journal is lost, the bot forgets which stocks it bought. It then leaves
+`engine/data/app_settings.json`. Download a copy from Replit now and then. The
+journal also holds what the bot learned and its AI spending. If the journal is
+lost, the bot forgets which stocks it bought. It then leaves
 them alone, and you can sell them in the Alpaca app.
 
 ## Taxes

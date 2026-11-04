@@ -18,8 +18,10 @@ from .analyst import AnalystUnavailable, AnalystView
 from .broker.base import Broker
 from .config import HARD_LIMITS, Mode, Settings
 from .journal import Journal, StopState
+from .learning import Memory
 from .market import MARKET, Mood, market_mood
 from .models import Bar, OrderRequest, Position, Side, Signal
+from .signals.book import TOTAL_BOOST_MAX
 from .signals.news import NewsCheck
 from .risk import RiskManager
 from .universe import build_universe, sector_of
@@ -29,6 +31,8 @@ log = logging.getLogger("autotrader")
 HISTORY_DAYS = strategy.MIN_HISTORY + 10
 APPROVAL_MAX_AGE = timedelta(hours=24)
 DUST = 1e-6  # share counts below this are treated as zero
+# Cheaper reviews: the fast model's "buy" stands only this far above the confidence needed.
+QUICK_MARGIN = 0.15
 
 
 EXTENDED_SESSIONS = {"pre", "after"}  # 4am-9:30am and 4pm-8pm New York time
@@ -108,7 +112,8 @@ class Engine:
                  progress: Callable[[str], None] = lambda step: None,
                  session: str = "regular",
                  screener: Callable[[], list[str]] | None = None,
-                 news: Callable[[str], "NewsCheck"] | None = None) -> None:
+                 news: Callable[[str], "NewsCheck"] | None = None,
+                 memory: Callable[[], Memory] | None = None) -> None:
         self.broker = broker
         self.s = settings
         self.journal = journal
@@ -134,6 +139,10 @@ class Engine:
         self.screener = screener
         self.news = news
         self.news_seen: dict[str, NewsCheck] = {}
+        self.screened: set[str] = set()
+        # What the bot learned from its own trades (see learning.py); read once per cycle.
+        self.memory_fn = memory
+        self.memory = Memory()
 
     @property
     def extended(self) -> bool:
@@ -227,10 +236,16 @@ class Engine:
         self.progress(f"Watching {len(positions)} stock{'' if len(positions) == 1 else 's'} it owns"
                       if positions else "It doesn't own any stocks yet")
 
+        if self.memory_fn is not None:
+            try:
+                self.memory = self.memory_fn()
+            except Exception as exc:  # trade on without it
+                log.warning("Couldn't read what the bot learned: %s", exc)
         universe = build_universe(self.s.always_watch, self.s.never_buy)
         if self.screener is not None:
             extra = [s for s in self.screener() if s not in universe
                      and s not in {n.upper() for n in self.s.never_buy}]
+            self.screened = set(extra)
             if extra:
                 self.progress(f"Adding {len(extra)} of today's most active and top-gaining stocks")
                 universe = [*universe, *extra]
@@ -333,6 +348,13 @@ class Engine:
             sig = strategy.score_trend(symbol, history)
             if sig is None:
                 continue
+            if sig.score < self.s.min_score:
+                report.skipped.append(f"{symbol}: trend score {sig.score:.2f} is under the "
+                                      f"{self.s.min_score:.2f} minimum")
+                continue
+            if symbol in self.screened:
+                sig.sources.append("screener")
+                sig.score = round(min(1.0, sig.score * self.memory.weight("screener")), 4)
             try:
                 problems = self._buy_problems(sig, history)
             except Exception as exc:  # one bad symbol must not stop the whole scan
@@ -356,8 +378,13 @@ class Engine:
             for sig in candidates[: self.s.max_signal_lookups]:
                 expert = self.signals.for_symbol(sig.symbol)
                 if expert.boost:
-                    sig.score = round(min(1.0, sig.score + expert.boost), 4)
+                    # Each source's boost, scaled by how well its past trades did, within the usual cap.
+                    boosts = expert.boosts or {"expert": expert.boost}
+                    boost = min(TOTAL_BOOST_MAX,
+                                sum(b * self.memory.weight(k) for k, b in boosts.items()))
+                    sig.score = round(min(1.0, sig.score + boost), 4)
                     sig.reasons.extend(expert.reasons)
+                    sig.sources.extend(k for k in boosts if k != "expert")
             candidates.sort(key=lambda c: c.score, reverse=True)
 
         if self.extended and candidates:
@@ -384,6 +411,11 @@ class Engine:
                 report.skipped.append(f"{sig.symbol}: {size.note}")
                 continue
             reasons = [f"Score {sig.score:.2f}", *sig.reasons, size.note]
+            sources = [*sig.sources, *(["penny"] if is_penny else []),
+                       *(["after_hours"] if self.extended else [])]
+            similar_note, similar = self.memory.similar_note(sources, sig.score)
+            if similar_note:
+                reasons.append(similar_note)
             if self.analyst is not None:
                 cached = self.journal.todays_view(self.mode, sig.symbol)
                 if not cached:
@@ -392,16 +424,18 @@ class Engine:
                         continue
                     reviews += 1
                     self.progress(f"Asking the AI analyst about {sig.symbol}")
-                verdict = self._analyst_verdict(sig, is_penny, cached)
+                verdict = self._analyst_verdict(sig, is_penny, cached, similar)
                 if isinstance(verdict, str):
                     report.skipped.append(f"{sig.symbol}: {verdict}")
                     self.progress(f"Skipped {sig.symbol}: {verdict}")
                     continue
                 if verdict is not None:
                     reasons.append(f"Analyst ({verdict.confidence:.0%} confident): {verdict.reasoning}")
+                    sources.append("analyst")
             limit = limit_for(Side.BUY, sig.price, self.extended, is_penny)
             if self.needs_approval:
-                self.journal.queue_approval(self.mode, sig.symbol, "buy", size.qty, limit, reasons)
+                self.journal.queue_approval(self.mode, sig.symbol, "buy", size.qty, limit, reasons,
+                                           sources)
                 risk.register_buy(sig.symbol, size.qty, sig.price, sector)
                 report.queued.append(f"{sig.symbol} x{size.qty:g}")
                 self.progress(f"Asking you to approve buying {size.qty:g} {sig.symbol}")
@@ -421,22 +455,21 @@ class Engine:
                 continue
             risk.register_buy(sig.symbol, size.qty, sig.price, sector)
             self.journal.record_trade(self.mode, sig.symbol, "buy", size.qty, sig.price,
-                                      order_id, reasons)
+                                      order_id, reasons, sources)
             stop = strategy.initial_stop(sig.price, sig.atr, strategy.stop_multiple(sig.price, self.s))
             self.order_placed(sig.symbol, StopState(sig.price, stop, sig.price, qty=size.qty), "buy", order_id)
             report.buys.append(f"{sig.symbol} x{size.qty:g} @ ${sig.price:.2f}")
             self.journal.add_event(self.mode, "buy", f"Bought {size.qty:g} {sig.symbol} at about ${sig.price:.2f}")
             log.info("BUY %s x%s @ %.2f (stop %.2f)", sig.symbol, size.qty, sig.price, stop)
 
-    def _analyst_verdict(self, sig: Signal, is_penny: bool,
-                         cached: dict | None = None) -> AnalystView | str | None:
+    def _analyst_verdict(self, sig: Signal, is_penny: bool, cached: dict | None = None,
+                         similar: list[dict] | None = None) -> AnalystView | str | None:
         """The analyst's approval, a reason string to skip, or None if it was unavailable."""
         if cached:
             view = AnalystView(cached["action"], cached["confidence"], cached["reasoning"],
                                cached["red_flags"])
         else:
-            try:
-                view = self.analyst.review({
+            candidate = {
                     "symbol": sig.symbol,
                     "price": sig.price,
                     "penny_stock": is_penny,
@@ -444,14 +477,20 @@ class Engine:
                     "average_daily_move_dollars": round(sig.atr, 4),
                     "why_the_rules_like_it": sig.reasons,
                     "recent_headlines": self.news_seen.get(sig.symbol, NewsCheck()).headlines,
-                })
-            except AnalystUnavailable as exc:
-                log.warning("Analyst unavailable for %s: %s", sig.symbol, exc)
-                if is_penny:
-                    return "analyst unavailable, and penny stocks always need its approval"
-                return None
+                    "lessons_from_past_trades": self.memory.lessons,
+                    "similar_past_trades": similar or [],
+            }
+            view = self._quick_view(candidate, is_penny)
+            if view is None:
+                try:
+                    view = self.analyst.review(candidate)
+                except AnalystUnavailable as exc:
+                    log.warning("Analyst unavailable for %s: %s", sig.symbol, exc)
+                    if is_penny:
+                        return "analyst unavailable, and penny stocks always need its approval"
+                    return None
             self.journal.save_view(self.mode, sig.symbol, sig.price, view.action, view.confidence,
-                                   view.reasoning, view.red_flags)
+                                   view.reasoning, view.red_flags, getattr(view, "model", None))
         floor = self.s.penny_analyst_min_confidence if is_penny else self.s.analyst_min_confidence
         if not view.approves:
             flags = f" Red flags: {'; '.join(view.red_flags)}." if view.red_flags else ""
@@ -459,6 +498,27 @@ class Engine:
         if view.confidence < floor:
             return f"analyst confidence {view.confidence:.0%} is below the {floor:.0%} needed"
         return view
+
+    def _quick_view(self, candidate: dict, is_penny: bool) -> AnalystView | None:
+        """The fast model's view when it's clear-cut, or None to ask the full analyst.
+
+        Clear-cut means a confident buy with no red flags, or a skip that names a red flag.
+        Penny stocks and everything in between always go to the full analyst.
+        """
+        if not (self.s.quick_reviews and not is_penny and getattr(self.analyst, "supports_quick", False)):
+            return None
+        try:
+            view = self.analyst.review(candidate, quick=True)
+        except AnalystUnavailable as exc:
+            log.info("Quick review unavailable for %s, asking the full analyst: %s",
+                     candidate["symbol"], exc)
+            return None
+        if view.approves and not view.red_flags and view.confidence >= self.s.analyst_min_confidence + QUICK_MARGIN:
+            return view
+        if not view.approves and view.red_flags:
+            return view
+        self.progress(f"Close call on {candidate['symbol']}; asking the full AI analyst")
+        return None
 
     def recheck_buy(self, symbol: str) -> tuple[Signal | None, list[str]]:
         """Run the buy rules again for one stock (used when you approve a queued buy)."""

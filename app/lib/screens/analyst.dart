@@ -5,6 +5,8 @@ import '../models.dart';
 import '../state.dart';
 import '../theme.dart';
 import '../widgets.dart';
+import 'lab_card.dart';
+import 'learning_card.dart';
 
 /// The AI analyst: its scorecard, its recent calls, and a chat box.
 class AnalystScreen extends StatefulWidget {
@@ -119,6 +121,16 @@ class _AnalystScreenState extends State<AnalystScreen> {
               ],
             ),
           ),
+        if (f != null && f.quick > 0)
+          Padding(
+            padding: const EdgeInsets.only(top: 8, left: 4),
+            child: Text(
+              '${f.quick} of ${f.total} settled by the cheaper quick review',
+              style: t.bodySmall?.copyWith(color: AppColors.muted),
+            ),
+          ),
+        LearningCard(key: ValueKey(mode), mode: mode),
+        LabCard(key: ValueKey('lab-$mode'), mode: mode),
         const SectionTitle('Ask the analyst'),
         GlassCard(
           child: Column(
@@ -237,6 +249,10 @@ class _AnalystScreenState extends State<AnalystScreen> {
                     ?.copyWith(color: AppColors.muted),
               ),
               const Spacer(),
+              if (v.isQuick) ...[
+                Pill('Quick review', color: AppColors.muted),
+                const SizedBox(width: 6),
+              ],
               Pill(
                 v.isBuy ? 'Buy' : 'Skip',
                 color: color,

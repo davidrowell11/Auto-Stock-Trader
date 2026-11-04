@@ -18,6 +18,9 @@ from dataclasses import dataclass, field
 log = logging.getLogger("autotrader.analyst")
 
 MODEL = "claude-opus-5-5"
+# First look for the cheaper reviews: about 40x cheaper per token than Opus.
+QUICK_MODEL = "claude-haiku-5-5"
+QUICK_SEARCH_TOOL = {"type": "web_search_20250305", "name": "web_search", "max_uses": 2}
 
 SYSTEM_PROMPT = """You are the risk-aware equity analyst inside an automated swing-trading bot \
 (holding periods of days to weeks). The bot's rules have already found a stock in a strong \
@@ -30,6 +33,10 @@ earnings report in the next 5 trading days, an announced share offering or dilut
 accounting questions, regulatory action, a pending acquisition that caps the price, or a move \
 driven only by hype or social-media promotion. For penny stocks (under $5) be especially \
 skeptical: promotion campaigns and dilution are common.
+
+If lessons from the bot's past trades are provided, apply them: they come from how its own \
+earlier buys turned out. Similar past trades, if given, are its closest earlier buys of the same \
+kind and how each ended; a poor record there is a reason for more caution, not an automatic skip.
 
 Weigh the expert signals provided: open-market insider buying and purchases by members of \
 Congress with strong track records are positives, but they are reported with a delay.
@@ -64,6 +71,7 @@ class AnalystView:
     confidence: float
     reasoning: str
     red_flags: list[str] = field(default_factory=list)
+    model: str | None = None  # which Claude model gave this view
 
     @property
     def approves(self) -> bool:
@@ -75,7 +83,10 @@ class AnalystUnavailable(RuntimeError):
 
 
 class Analyst:
-    def __init__(self, client=None, model: str = MODEL, effort: str = "medium") -> None:
+    supports_quick = True  # the engine may ask the fast model first (Settings.quick_reviews)
+
+    def __init__(self, client=None, model: str = MODEL, effort: str = "medium",
+                 quick_model: str = QUICK_MODEL) -> None:
         if client is None:
             import anthropic  # imported here so tests don't need the package
 
@@ -83,9 +94,20 @@ class Analyst:
         self.client = client
         self.model = model
         self.effort = effort
+        self.quick_model = quick_model
 
-    def review(self, candidate: dict) -> AnalystView:
-        """Ask Claude for a view on one buy candidate. Raises AnalystUnavailable on failure."""
+    def review(self, candidate: dict, quick: bool = False) -> AnalystView:
+        """Ask Claude for a view on one buy candidate. Raises AnalystUnavailable on failure.
+
+        quick uses the fast, low-cost model; the engine only trusts its clear-cut answers.
+        """
+        if quick:
+            extra = {"tools": [QUICK_SEARCH_TOOL, SUBMIT_TOOL]}  # no server-side fallback on this model
+            model = self.quick_model
+        else:
+            extra = {"tools": [WEB_SEARCH_TOOL, SUBMIT_TOOL], "output_config": {"effort": self.effort},
+                     "betas": ["server-side-fallback-2026-07-01"], "fallbacks": "default"}
+            model = self.model
         messages = [{
             "role": "user",
             "content": "Review this buy candidate:\n\n" + json.dumps(candidate, indent=2, default=str),
@@ -93,15 +115,7 @@ class Analyst:
         for _ in range(3):  # allow resuming if the server pauses a long search turn
             try:
                 response = self.client.beta.messages.create(
-                    model=self.model,
-                    max_tokens=16000,
-                    system=SYSTEM_PROMPT,
-                    messages=messages,
-                    tools=[WEB_SEARCH_TOOL, SUBMIT_TOOL],
-                    output_config={"effort": self.effort},
-                    betas=["server-side-fallback-2026-07-01"],
-                    fallbacks="default",
-                )
+                    model=model, max_tokens=16000, system=SYSTEM_PROMPT, messages=messages, **extra)
             except Exception as exc:
                 raise AnalystUnavailable(plain_error(exc)) from exc
 
@@ -109,7 +123,9 @@ class Analyst:
                 raise AnalystUnavailable("The analyst declined to review this stock")
             for block in response.content:
                 if getattr(block, "type", None) == "tool_use" and block.name == "submit_view":
-                    return _to_view(block.input)
+                    view = _to_view(block.input)
+                    view.model = model
+                    return view
             if response.stop_reason == "pause_turn":
                 messages = [*messages, {"role": "assistant", "content": response.content}]
                 continue
@@ -119,6 +135,10 @@ class Analyst:
 
 def plain_error(exc: Exception) -> str:
     """A Claude API failure in words the app can show, with what to do about it."""
+    from .spend import SpendingCapReached
+
+    if isinstance(exc, SpendingCapReached):
+        return str(exc)
     text = str(exc)
     status = getattr(exc, "status_code", None)
     lower = text.lower()

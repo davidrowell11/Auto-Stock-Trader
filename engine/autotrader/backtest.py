@@ -122,10 +122,15 @@ def stats(curve: list[tuple[datetime, float]]) -> Stats:
 
 
 def run_backtest(history: dict[str, list[Bar]], settings: Settings, cash: float = 100_000,
-                 cost_bps: float = 10.0, warmup: int = MIN_HISTORY) -> BacktestResult:
-    """Replay ``history`` through the bot. The first ``warmup`` days only build indicators."""
+                 cost_bps: float = 10.0, warmup: int = MIN_HISTORY,
+                 journal: Journal | None = None) -> BacktestResult:
+    """Replay ``history`` through the bot. The first ``warmup`` days only build indicators.
+
+    Pass a journal to read the replayed trades afterwards (e.g. which ones lost money).
+    """
     broker = ReplayBroker(cash, history, cost_bps)
-    engine = Engine(broker, settings, Journal(), penny_needs_analyst=False)
+    engine = Engine(broker, settings, journal if journal is not None else Journal(),
+                    penny_needs_analyst=False)
     dates = broker.dates
     if len(dates) <= warmup + 1:
         raise ValueError(f"Need more than {warmup + 1} trading days of history, got {len(dates)}")

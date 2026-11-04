@@ -40,6 +40,32 @@ calendar, so holidays and early closes are handled).
    searches recent news for red flags (earnings next week, share offerings,
    fraud, hype), and says buy or skip with a confidence score and a short
    reason. It can only veto a buy. Its views are saved as a scorecard.
+   With cheaper reviews on (default in Test, a switch for Live), a fast,
+   low-cost model looks first; its answer stands only when it's a clear
+   call (a buy at least 15 points above the confidence needed with no red
+   flags, or a skip that names a red flag). Close calls and every penny
+   stock go to the full analyst.
+6. **Learns from its own trades** (`learning.py`). Each buy records what
+   pointed the bot at the stock (trend rules, the screener, insiders,
+   Congress, the analyst). Once a week it looks at its finished trades:
+   sources that keep leading to winners count a little more when ranking
+   buys and losing ones a little less (always between 0.7x and 1.3x, and
+   only after five finished trades), and Claude writes up to six short
+   lessons that go into every analyst review. Test uses new lessons at once;
+   Live only after you approve them in the app. Learning never touches
+   stops, sizes, budgets or penny-stock limits.
+7. **Tests one rule change a week** (`lab.py`, the strategy lab). It tries
+   one step on one setting (safety-stop distance, minimum trend score),
+   replays it on the older two thirds of three years of prices, then on the
+   newer third it never tuned on. It keeps the change only if it wins on
+   both (Sharpe +0.10 on the unseen part, higher return, a drop no more than
+   1 point worse) and fixes some of the current rules' losing trades. Test
+   uses it at once; Live after your approval; either can be undone.
+
+**AI spending cap** (`spend.py`): every Claude call is priced from its token
+counts and counted toward a monthly cap ($20 by default, set in the app).
+At the cap the analyst pauses until the 1st: no penny-stock buys, other buys
+on the rules alone, as when Claude can't be reached.
 
 ## Safety rules
 
@@ -142,7 +168,5 @@ PYTHONPATH=.:tests python -m unittest discover -s tests
 
 ## Coming next
 
-* Hedge fund (13F) signals and a stock screener that finds candidates beyond
-  the starting list, including penny stocks.
+* Hedge fund (13F) signals.
 * Push notifications for trades and alerts (the app's activity feed covers this for now).
-* Strategy lab: test new strategies on paper next to the main bot.

@@ -81,12 +81,17 @@ class Settings:
     analyst_min_confidence: float = 0.60
     penny_analyst_min_confidence: float = 0.75
     max_analyst_reviews: int = 5  # per cycle, to keep API costs down
+    # Lowest trend score worth buying (the strategy lab can raise it; 0 means any uptrend).
+    min_score: float = 0.0
     max_signal_lookups: int = 10  # stocks per cycle checked for insider/Congress buying
     # Live trades wait for a one-tap approval until this is switched off.
     approve_mode: bool = True
     # New buys in pre-market (4am-9:30am) and after hours (4pm-8pm). Selling to protect
     # holdings happens in those hours either way. On for Test, off for Live until switched on.
     after_hours_buys: bool = False
+    # Cheaper AI reviews: a fast, low-cost Claude model reviews first and the full analyst only
+    # sees the close calls (and every penny stock). On for Test, off for Live until switched on.
+    quick_reviews: bool = False
     always_watch: tuple[str, ...] = ()
     never_buy: tuple[str, ...] = ()
     poll_seconds: int = 300
