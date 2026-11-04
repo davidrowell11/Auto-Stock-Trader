@@ -38,6 +38,13 @@ abstract class TraderApi {
   });
   Future<String> ask(String question, String mode);
   Future<Readiness> readiness();
+  Future<Learning> learning(String mode);
+
+  /// Live only: use (or turn down) the lessons Test learned.
+  Future<Learning> decideLearning(bool approve);
+
+  /// Test only: learn from finished trades now instead of waiting for the weekly review.
+  Future<Learning> learnNow();
 }
 
 class HttpApi implements TraderApi {
@@ -205,6 +212,28 @@ class HttpApi implements TraderApi {
   @override
   Future<Readiness> readiness() async =>
       Readiness.fromJson(await _send('GET', '/api/readiness'));
+
+  @override
+  Future<Learning> learning(String mode) async =>
+      Learning.fromJson(await _send('GET', '/api/$mode/learning'));
+
+  @override
+  Future<Learning> decideLearning(bool approve) async => Learning.fromJson(
+    await _send('POST', '/api/live/learning', {
+      'decision': approve ? 'approve' : 'reject',
+    }),
+  );
+
+  @override
+  Future<Learning> learnNow() async => Learning.fromJson(
+    // Writing the lessons asks Claude, which can take a little while.
+    await _send(
+      'POST',
+      '/api/test/learning/run',
+      null,
+      const Duration(seconds: 90),
+    ),
+  );
 
   @override
   Future<String> ask(String question, String mode) async =>

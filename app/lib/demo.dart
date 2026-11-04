@@ -252,6 +252,41 @@ class DemoApi implements TraderApi {
     return AnalystFeed(views: views, total: 42, approved: 29);
   }
 
+  late final _memory = LearnedMemory(
+    ts: DateTime.now().subtract(const Duration(days: 2)),
+    lessons: [
+      'Stocks bought the day after a 15%+ jump on the gainers list usually gave the gain back; be wary of chasing them.',
+      'Buys backed by several insiders held up best, even in choppy weeks.',
+      'Most losing trades were sold for "trend broke" within a week; a fresh breakout that fails fast is a warning sign.',
+    ],
+    trades: 23,
+    wins: 14,
+    weights: [
+      (label: 'Insider buying', weight: 1.12),
+      (label: "Congress members' buys", weight: 1.0),
+      (label: "Today's most active and top gainers", weight: 0.86),
+    ],
+  );
+  bool _liveApproved = false;
+
+  @override
+  Future<Learning> learning(String mode) async => Learning(
+    active: mode == 'test' || _liveApproved ? _memory : null,
+    proposed: mode == 'live' && !_liveApproved ? _memory : null,
+    finishedTrades: mode == 'test' ? 23 : 0,
+    needs: 0,
+    everyDays: 7,
+  );
+
+  @override
+  Future<Learning> decideLearning(bool approve) async {
+    _liveApproved = approve;
+    return learning('live');
+  }
+
+  @override
+  Future<Learning> learnNow() => learning('test');
+
   @override
   Future<List<Approval>> approvals(String mode) async =>
       mode == 'live' ? List.of(_approvals) : [];

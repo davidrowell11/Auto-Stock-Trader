@@ -45,6 +45,10 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE TABLE IF NOT EXISTS equity (
     ts TEXT NOT NULL, mode TEXT NOT NULL, equity REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS memory (
+    id INTEGER PRIMARY KEY,
+    ts TEXT NOT NULL, mode TEXT NOT NULL, status TEXT NOT NULL, data TEXT NOT NULL
+);
 """
 
 
@@ -54,6 +58,8 @@ def _now() -> str:
 
 # Added after the first release; older journals get them on startup.
 STOP_COLUMNS = {"qty": "REAL", "order_id": "TEXT", "order_side": "TEXT"}
+# What pointed the bot at a stock ("trend", "screener", "insider", ...), so it can learn which work.
+LATER_COLUMNS = {"stops": STOP_COLUMNS, "trades": {"sources": "TEXT"}, "approvals": {"sources": "TEXT"}}
 
 
 @dataclass
@@ -83,20 +89,23 @@ class Journal:
         self._lock = threading.RLock()
         self.db = sqlite3.connect(str(path), check_same_thread=False)
         self.db.executescript(SCHEMA)
-        have = {r[1] for r in self.db.execute("PRAGMA table_info(stops)")}
-        for name, kind in STOP_COLUMNS.items():
-            if name not in have:
-                self.db.execute(f"ALTER TABLE stops ADD COLUMN {name} {kind}")
+        for table, columns in LATER_COLUMNS.items():
+            have = {r[1] for r in self.db.execute(f"PRAGMA table_info({table})")}
+            for name, kind in columns.items():
+                if name not in have:
+                    self.db.execute(f"ALTER TABLE {table} ADD COLUMN {name} {kind}")
         self.db.commit()
 
     # ----- trades -----
     def record_trade(self, mode: str, symbol: str, side: str, qty: float, price: float,
-                     order_id: str | None, reasons: list[str]) -> None:
+                     order_id: str | None, reasons: list[str],
+                     sources: list[str] | None = None) -> None:
         with self.db:
             self.db.execute(
-                "INSERT INTO trades (ts, mode, symbol, side, qty, price, order_id, reasons)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (_now(), mode, symbol, side, qty, price, order_id, json.dumps(reasons)),
+                "INSERT INTO trades (ts, mode, symbol, side, qty, price, order_id, reasons, sources)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (_now(), mode, symbol, side, qty, price, order_id, json.dumps(reasons),
+                 json.dumps(sources) if sources is not None else None),
             )
 
     def last_protective_sell(self, mode: str, symbol: str) -> datetime | None:
@@ -111,13 +120,14 @@ class Journal:
 
     def trades(self, mode: str) -> list[dict]:
         cur = self.db.execute(
-            "SELECT ts, symbol, side, qty, price, order_id, reasons FROM trades"
+            "SELECT ts, symbol, side, qty, price, order_id, reasons, sources FROM trades"
             " WHERE mode = ? ORDER BY id", (mode,),
         )
         cols = [c[0] for c in cur.description]
         rows = [dict(zip(cols, r)) for r in cur.fetchall()]
         for r in rows:
             r["reasons"] = json.loads(r["reasons"])
+            r["sources"] = json.loads(r["sources"]) if r["sources"] else ["trend"]
         return rows
 
     # ----- trailing stops -----
@@ -159,12 +169,14 @@ class Journal:
 
     # ----- approvals (Live approve mode) -----
     def queue_approval(self, mode: str, symbol: str, side: str, qty: float,
-                       limit_price: float | None, reasons: list[str]) -> int:
+                       limit_price: float | None, reasons: list[str],
+                       sources: list[str] | None = None) -> int:
         with self.db:
             cur = self.db.execute(
-                "INSERT INTO approvals (ts, mode, symbol, side, qty, limit_price, reasons)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (_now(), mode, symbol, side, qty, limit_price, json.dumps(reasons)),
+                "INSERT INTO approvals (ts, mode, symbol, side, qty, limit_price, reasons, sources)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (_now(), mode, symbol, side, qty, limit_price, json.dumps(reasons),
+                 json.dumps(sources) if sources is not None else None),
             )
         return int(cur.lastrowid)
 
@@ -181,14 +193,15 @@ class Journal:
 
     def get_approval(self, approval_id: int) -> dict | None:
         cur = self.db.execute(
-            "SELECT id, ts, mode, symbol, side, qty, limit_price, reasons, status FROM approvals"
-            " WHERE id = ?", (approval_id,),
+            "SELECT id, ts, mode, symbol, side, qty, limit_price, reasons, status, sources"
+            " FROM approvals WHERE id = ?", (approval_id,),
         )
         row = cur.fetchone()
         if not row:
             return None
         out = dict(zip([c[0] for c in cur.description], row))
         out["reasons"] = json.loads(out["reasons"])
+        out["sources"] = json.loads(out["sources"]) if out["sources"] else ["trend"]
         return out
 
     def expire_approvals(self, mode: str, max_age: timedelta) -> int:
@@ -279,6 +292,28 @@ class Journal:
     def peak_equity(self, mode: str) -> float:
         row = self.db.execute("SELECT MAX(equity) FROM equity WHERE mode = ?", (mode,)).fetchone()
         return float(row[0]) if row and row[0] is not None else 0.0
+
+    # ----- what the bot learned (see learning.py) -----
+    def save_memory(self, mode: str, status: str, data: dict) -> int:
+        """Store a memory. A new "active" or "proposed" one replaces the previous one of that status."""
+        with self.db:
+            self.db.execute("UPDATE memory SET status = 'replaced' WHERE mode = ? AND status = ?",
+                            (mode, status))
+            cur = self.db.execute("INSERT INTO memory (ts, mode, status, data) VALUES (?, ?, ?, ?)",
+                                  (_now(), mode, status, json.dumps(data)))
+        return int(cur.lastrowid)
+
+    def memory(self, mode: str, status: str = "active") -> dict | None:
+        row = self.db.execute(
+            "SELECT id, ts, data FROM memory WHERE mode = ? AND status = ? ORDER BY id DESC LIMIT 1",
+            (mode, status)).fetchone()
+        if not row:
+            return None
+        return {"id": row[0], "ts": row[1], **json.loads(row[2])}
+
+    def set_memory_status(self, memory_id: int, status: str) -> None:
+        with self.db:
+            self.db.execute("UPDATE memory SET status = ? WHERE id = ?", (status, memory_id))
 
 
 for _name, _fn in list(vars(Journal).items()):

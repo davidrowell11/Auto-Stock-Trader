@@ -31,6 +31,9 @@ accounting questions, regulatory action, a pending acquisition that caps the pri
 driven only by hype or social-media promotion. For penny stocks (under $5) be especially \
 skeptical: promotion campaigns and dilution are common.
 
+If lessons from the bot's past trades are provided, apply them: they come from how its own \
+earlier buys turned out.
+
 Weigh the expert signals provided: open-market insider buying and purchases by members of \
 Congress with strong track records are positives, but they are reported with a delay.
 

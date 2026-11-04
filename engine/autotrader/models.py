@@ -82,3 +82,4 @@ class Signal:
     price: float
     atr: float
     reasons: list[str] = field(default_factory=list)
+    sources: list[str] = field(default_factory=lambda: ["trend"])  # what pointed the bot here (for learning)

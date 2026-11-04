@@ -5,6 +5,7 @@ import '../models.dart';
 import '../state.dart';
 import '../theme.dart';
 import '../widgets.dart';
+import 'learning_card.dart';
 
 /// The AI analyst: its scorecard, its recent calls, and a chat box.
 class AnalystScreen extends StatefulWidget {
@@ -119,6 +120,7 @@ class _AnalystScreenState extends State<AnalystScreen> {
               ],
             ),
           ),
+        LearningCard(key: ValueKey(mode), mode: mode),
         const SectionTitle('Ask the analyst'),
         GlassCard(
           child: Column(

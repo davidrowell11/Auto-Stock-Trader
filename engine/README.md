@@ -40,6 +40,15 @@ calendar, so holidays and early closes are handled).
    searches recent news for red flags (earnings next week, share offerings,
    fraud, hype), and says buy or skip with a confidence score and a short
    reason. It can only veto a buy. Its views are saved as a scorecard.
+6. **Learns from its own trades** (`learning.py`). Each buy records what
+   pointed the bot at the stock (trend rules, the screener, insiders,
+   Congress, the analyst). Once a week it looks at its finished trades:
+   sources that keep leading to winners count a little more when ranking
+   buys and losing ones a little less (always between 0.7x and 1.3x, and
+   only after five finished trades), and Claude writes up to six short
+   lessons that go into every analyst review. Test uses new lessons at once;
+   Live only after you approve them in the app. Learning never touches
+   stops, sizes, budgets or penny-stock limits.
 
 ## Safety rules
 
@@ -142,7 +151,6 @@ PYTHONPATH=.:tests python -m unittest discover -s tests
 
 ## Coming next
 
-* Hedge fund (13F) signals and a stock screener that finds candidates beyond
-  the starting list, including penny stocks.
+* Hedge fund (13F) signals.
 * Push notifications for trades and alerts (the app's activity feed covers this for now).
 * Strategy lab: test new strategies on paper next to the main bot.

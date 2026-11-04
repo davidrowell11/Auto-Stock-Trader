@@ -388,3 +388,59 @@ class PriceBar {
     _d(j['v']),
   );
 }
+
+/// One version of what the bot learned from its finished trades.
+class LearnedMemory {
+  LearnedMemory({
+    required this.ts,
+    required this.lessons,
+    required this.trades,
+    required this.wins,
+    required this.weights,
+    this.lessonsError,
+  });
+  final DateTime ts;
+  final List<String> lessons;
+
+  /// Why new lessons couldn't be written last time (e.g. the analyst was out of credits).
+  final String? lessonsError;
+  final int trades, wins;
+
+  /// How much each idea source counts when ranking buys (1.0 = unchanged).
+  final List<({String label, double weight})> weights;
+
+  factory LearnedMemory.fromJson(Map<String, dynamic> j) => LearnedMemory(
+    ts: DateTime.parse(j['ts'] as String),
+    lessons: [for (final l in j['lessons'] as List) l.toString()],
+    lessonsError: j['lessons_error'] as String?,
+    trades: (j['trades'] as num).toInt(),
+    wins: (j['wins'] as num).toInt(),
+    weights: [
+      for (final w in j['weights'] as List)
+        (label: w['label'] as String, weight: (w['weight'] as num).toDouble()),
+    ],
+  );
+}
+
+/// The "What the bot learned" card: the memory in use and, in Live, a new one waiting for your OK.
+class Learning {
+  Learning({
+    this.active,
+    this.proposed,
+    required this.finishedTrades,
+    required this.needs,
+    required this.everyDays,
+  });
+  final LearnedMemory? active, proposed;
+  final int finishedTrades, needs, everyDays;
+
+  factory Learning.fromJson(Map<String, dynamic> j) => Learning(
+    active: j['active'] == null ? null : LearnedMemory.fromJson(j['active']),
+    proposed: j['proposed'] == null
+        ? null
+        : LearnedMemory.fromJson(j['proposed']),
+    finishedTrades: (j['finished_trades'] as num).toInt(),
+    needs: (j['needs'] as num).toInt(),
+    everyDays: (j['every_days'] as num).toInt(),
+  );
+}

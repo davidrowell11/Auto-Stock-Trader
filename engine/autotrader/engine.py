@@ -18,8 +18,10 @@ from .analyst import AnalystUnavailable, AnalystView
 from .broker.base import Broker
 from .config import HARD_LIMITS, Mode, Settings
 from .journal import Journal, StopState
+from .learning import Memory
 from .market import MARKET, Mood, market_mood
 from .models import Bar, OrderRequest, Position, Side, Signal
+from .signals.book import TOTAL_BOOST_MAX
 from .signals.news import NewsCheck
 from .risk import RiskManager
 from .universe import build_universe, sector_of
@@ -108,7 +110,8 @@ class Engine:
                  progress: Callable[[str], None] = lambda step: None,
                  session: str = "regular",
                  screener: Callable[[], list[str]] | None = None,
-                 news: Callable[[str], "NewsCheck"] | None = None) -> None:
+                 news: Callable[[str], "NewsCheck"] | None = None,
+                 memory: Callable[[], Memory] | None = None) -> None:
         self.broker = broker
         self.s = settings
         self.journal = journal
@@ -134,6 +137,10 @@ class Engine:
         self.screener = screener
         self.news = news
         self.news_seen: dict[str, NewsCheck] = {}
+        self.screened: set[str] = set()
+        # What the bot learned from its own trades (see learning.py); read once per cycle.
+        self.memory_fn = memory
+        self.memory = Memory()
 
     @property
     def extended(self) -> bool:
@@ -227,10 +234,16 @@ class Engine:
         self.progress(f"Watching {len(positions)} stock{'' if len(positions) == 1 else 's'} it owns"
                       if positions else "It doesn't own any stocks yet")
 
+        if self.memory_fn is not None:
+            try:
+                self.memory = self.memory_fn()
+            except Exception as exc:  # trade on without it
+                log.warning("Couldn't read what the bot learned: %s", exc)
         universe = build_universe(self.s.always_watch, self.s.never_buy)
         if self.screener is not None:
             extra = [s for s in self.screener() if s not in universe
                      and s not in {n.upper() for n in self.s.never_buy}]
+            self.screened = set(extra)
             if extra:
                 self.progress(f"Adding {len(extra)} of today's most active and top-gaining stocks")
                 universe = [*universe, *extra]
@@ -333,6 +346,9 @@ class Engine:
             sig = strategy.score_trend(symbol, history)
             if sig is None:
                 continue
+            if symbol in self.screened:
+                sig.sources.append("screener")
+                sig.score = round(min(1.0, sig.score * self.memory.weight("screener")), 4)
             try:
                 problems = self._buy_problems(sig, history)
             except Exception as exc:  # one bad symbol must not stop the whole scan
@@ -356,8 +372,13 @@ class Engine:
             for sig in candidates[: self.s.max_signal_lookups]:
                 expert = self.signals.for_symbol(sig.symbol)
                 if expert.boost:
-                    sig.score = round(min(1.0, sig.score + expert.boost), 4)
+                    # Each source's boost, scaled by how well its past trades did, within the usual cap.
+                    boosts = expert.boosts or {"expert": expert.boost}
+                    boost = min(TOTAL_BOOST_MAX,
+                                sum(b * self.memory.weight(k) for k, b in boosts.items()))
+                    sig.score = round(min(1.0, sig.score + boost), 4)
                     sig.reasons.extend(expert.reasons)
+                    sig.sources.extend(k for k in boosts if k != "expert")
             candidates.sort(key=lambda c: c.score, reverse=True)
 
         if self.extended and candidates:
@@ -384,6 +405,8 @@ class Engine:
                 report.skipped.append(f"{sig.symbol}: {size.note}")
                 continue
             reasons = [f"Score {sig.score:.2f}", *sig.reasons, size.note]
+            sources = [*sig.sources, *(["penny"] if is_penny else []),
+                       *(["after_hours"] if self.extended else [])]
             if self.analyst is not None:
                 cached = self.journal.todays_view(self.mode, sig.symbol)
                 if not cached:
@@ -399,9 +422,11 @@ class Engine:
                     continue
                 if verdict is not None:
                     reasons.append(f"Analyst ({verdict.confidence:.0%} confident): {verdict.reasoning}")
+                    sources.append("analyst")
             limit = limit_for(Side.BUY, sig.price, self.extended, is_penny)
             if self.needs_approval:
-                self.journal.queue_approval(self.mode, sig.symbol, "buy", size.qty, limit, reasons)
+                self.journal.queue_approval(self.mode, sig.symbol, "buy", size.qty, limit, reasons,
+                                           sources)
                 risk.register_buy(sig.symbol, size.qty, sig.price, sector)
                 report.queued.append(f"{sig.symbol} x{size.qty:g}")
                 self.progress(f"Asking you to approve buying {size.qty:g} {sig.symbol}")
@@ -421,7 +446,7 @@ class Engine:
                 continue
             risk.register_buy(sig.symbol, size.qty, sig.price, sector)
             self.journal.record_trade(self.mode, sig.symbol, "buy", size.qty, sig.price,
-                                      order_id, reasons)
+                                      order_id, reasons, sources)
             stop = strategy.initial_stop(sig.price, sig.atr, strategy.stop_multiple(sig.price, self.s))
             self.order_placed(sig.symbol, StopState(sig.price, stop, sig.price, qty=size.qty), "buy", order_id)
             report.buys.append(f"{sig.symbol} x{size.qty:g} @ ${sig.price:.2f}")
@@ -444,6 +469,7 @@ class Engine:
                     "average_daily_move_dollars": round(sig.atr, 4),
                     "why_the_rules_like_it": sig.reasons,
                     "recent_headlines": self.news_seen.get(sig.symbol, NewsCheck()).headlines,
+                    "lessons_from_past_trades": self.memory.lessons,
                 })
             except AnalystUnavailable as exc:
                 log.warning("Analyst unavailable for %s: %s", sig.symbol, exc)

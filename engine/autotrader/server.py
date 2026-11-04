@@ -35,6 +35,8 @@ from .config import HARD_LIMITS, Mode, Settings, load_settings
 from .engine import APPROVAL_MAX_AGE, Engine, bot_positions, limit_for
 from .readiness import live_checks, test_results
 from .journal import Journal, StopState
+from .learning import Learner, LearnerBusy
+from .learning import report as learning_report
 from .models import OrderRequest, Side
 from .risk import RiskManager
 from .universe import sector_of
@@ -136,6 +138,7 @@ class BotRunner:
         self._stop = threading.Event()
         self.halted_by_you = threading.Event()  # set by Stop or the kill switch, cleared by Start
         self._thread: threading.Thread | None = None
+        self.learner: Learner | None = None  # set on the Test bot: it does the weekly learning
 
     def step(self, text: str, log_it: bool = True) -> None:
         """Record what the bot is doing right now (and, if log_it, add it to the recent steps)."""
@@ -268,7 +271,20 @@ class BotRunner:
                 self.failures += 1
                 if self.mode is Mode.LIVE and self.failures >= HARD_LIMITS.live_auto_stop_errors:
                     self.pause_buying(f"{self.failures} cycles failed in a row ({exc})")
+            self.learn_if_due()
             self._pause(wait)
+
+    def learn_if_due(self) -> None:
+        """Once a week, learn from finished trades (runs even while stopped or the market is closed)."""
+        if self.learner is None:
+            return
+        try:
+            if self.learner.due():
+                self.step("Reviewing how its finished trades turned out", log_it=False)
+                if self.learner.learn():
+                    self.step("Updated what it learned from its trades")
+        except Exception:
+            log.exception("Learning from trades failed")
 
     def _pause(self, seconds: float) -> None:
         """Wait between checks; Start (or shutting down) cuts the wait short."""
@@ -342,8 +358,10 @@ class BotRunner:
         limit = limit_for(Side.BUY, price, extended, is_penny)
         order_id = self.broker.submit_order(
             OrderRequest(a["symbol"], Side.BUY, qty, limit, "Approved in app", extended))
+        # Tagged by how it's bought now, not how things stood when it was suggested.
+        sources = [x for x in a["sources"] if x != "after_hours"] + (["after_hours"] if extended else [])
         self.journal.record_trade(self.mode.value, a["symbol"], "buy", qty, price, order_id,
-                                  [*a["reasons"], "Approved by you in the app"])
+                                  [*a["reasons"], "Approved by you in the app"], sources)
         stop = strategy.initial_stop(price, sig.atr, strategy.stop_multiple(price, s))
         engine.order_placed(a["symbol"], StopState(price, stop, price, qty=qty), "buy", order_id)
         self.journal.set_approval_status(approval_id, "approved")
@@ -444,6 +462,10 @@ class KillRequest(BaseModel):
     sell_all: bool = False
 
 
+class LearningDecision(BaseModel):
+    decision: str = Field(pattern="^(approve|reject)$")
+
+
 class AskRequest(BaseModel):
     question: str = Field(min_length=1, max_length=2000)
     mode: str = "test"
@@ -451,9 +473,11 @@ class AskRequest(BaseModel):
 
 def create_app(runners: dict[Mode, BotRunner], journal: Journal, token: str,
                ask_fn: Callable[[str, dict], str] | None = None,
-               live_enabled: bool = False, skip_results: bool = False) -> FastAPI:
+               live_enabled: bool = False, skip_results: bool = False,
+               learner: Learner | None = None) -> FastAPI:
     if not token:
         raise RuntimeError("Set AUTOTRADER_APP_TOKEN before starting the server")
+    learner = learner or Learner(journal)
     app = FastAPI(title="Auto Stock Trader")
     app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"],
                        allow_headers=["*"])
@@ -547,6 +571,39 @@ def create_app(runners: dict[Mode, BotRunner], journal: Journal, token: str,
         views = list(reversed(journal.views(runner(mode).mode.value)))
         buys = [v for v in views if v["action"] == "buy"]
         return {"views": views[:200], "total": len(views), "approved": len(buys)}
+
+    @app.get("/api/{mode}/learning", **secured)
+    def learning(mode: str):
+        """What the bot learned from its trades, and (Live) new lessons waiting for your OK."""
+        return learning_report(journal, runner(mode).mode.value)
+
+    @app.post("/api/live/learning", **secured)
+    def decide_learning(body: LearningDecision):
+        r = runners[Mode.LIVE]
+        # Not halfway through a Live check, but don't hang the app if one is running long.
+        if not r.lock.acquire(timeout=10):
+            raise HTTPException(409, "The bot is in the middle of a check. Try again in a minute.")
+        try:
+            if body.decision == "approve":
+                learner.approve_live()
+            else:
+                learner.reject_live()
+        except LookupError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        finally:
+            r.lock.release()
+        return learning_report(journal, Mode.LIVE.value)
+
+    @app.post("/api/test/learning/run", **secured)
+    def learn_now():
+        """Learn from finished trades now instead of waiting for the weekly review."""
+        try:
+            learned = learner.learn()
+        except LearnerBusy as exc:
+            raise HTTPException(409, str(exc)) from exc
+        if learned is None:
+            raise HTTPException(409, "Not enough finished trades to learn from yet")
+        return learning_report(journal, Mode.TEST.value)
 
     @app.get("/api/{mode}/approvals", **secured)
     def approvals(mode: str):
@@ -711,15 +768,18 @@ def main() -> None:
     journal = Journal(base.journal_path)
     store = SettingsStore(Path(base.journal_path).with_name("app_settings.json"))
 
-    analyst, ask_fn = None, None
+    analyst, ask_fn, lessons_fn = None, None, None
     if os.environ.get("ANTHROPIC_API_KEY"):
         import anthropic
 
         from .analyst import Analyst, ask
+        from .learning import claude_lessons
 
         client = anthropic.Anthropic()
         analyst = Analyst(client)
         ask_fn = lambda q, ctx: ask(client, q, ctx)  # noqa: E731
+        lessons_fn = claude_lessons(client)
+    learner = Learner(journal, lessons_fn)
 
     sec = SecClient()
     earnings = EarningsCalendar()
@@ -738,13 +798,16 @@ def main() -> None:
             "earnings": earnings.reports_soon,
             "screener": screener.symbols if screener else None,
             "news": news.check,
+            "memory": (lambda m=mode.value: learner.memory(m)),
         }
+        if mode is Mode.TEST:
+            r.learner = learner
         if mode is Mode.LIVE and not live_enabled:
             store.update(mode, {"running": False})
         r.start_thread()
         runners[mode] = r
 
-    app = create_app(runners, journal, token, ask_fn, live_enabled, skip_results)
+    app = create_app(runners, journal, token, ask_fn, live_enabled, skip_results, learner)
     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", "8000")))
 
 
