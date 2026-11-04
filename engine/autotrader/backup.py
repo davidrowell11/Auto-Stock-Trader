@@ -67,18 +67,23 @@ class Backup:
     open database rather than the file on disk).
     """
 
-    def __init__(self, store: Store, sources: dict[str, tuple[Path, Callable[[], bytes | None]]]):
+    def __init__(self, store: Store, sources: dict[str, tuple[Path, Callable[[], bytes | None]]],
+                 database_wins: bool = False):
         self.store = store
+        # Published on Replit, the files at start are a copy of the workspace's, never the bot's
+        # own: the database copy is always the newer one, even when a file is there.
+        self.database_wins = database_wins
         self.sources = sources
         self._saved: dict[str, str] = {}
         self._stop = threading.Event()
         self._lock = threading.Lock()
 
     def restore(self) -> list[str]:
-        """Put back every file that is missing locally. Returns the names restored."""
+        """Put back every file that is missing locally (or every file the database has, when the
+        database wins). Returns the names restored."""
         restored = []
         for name, (path, _) in self.sources.items():
-            if path.exists() and path.stat().st_size > 0:
+            if not self.database_wins and path.exists() and path.stat().st_size > 0:
                 continue
             try:
                 data = self.store.get(name)
@@ -143,8 +148,9 @@ def from_environment(journal_path: Path, settings_path: Path,
         return None
     # The published bot and a copy running in the Replit workspace may share one database:
     # each keeps its own files so neither overwrites the other's memory.
-    where = "published" if os.environ.get("REPLIT_DEPLOYMENT") else "workspace"
+    published = bool(os.environ.get("REPLIT_DEPLOYMENT"))
+    where = "published" if published else "workspace"
     return Backup(store, {
         f"{where}/journal.sqlite3": (journal_path, journal_snapshot),
         f"{where}/app_settings.json": (settings_path, read_file(settings_path)),
-    })
+    }, database_wins=published)
