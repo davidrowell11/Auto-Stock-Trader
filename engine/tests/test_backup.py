@@ -70,6 +70,16 @@ class BackupTests(unittest.TestCase):
         self.store.put = mock.Mock(side_effect=RuntimeError("database down"))
         self.assertEqual(b.save(), [])  # logged, not raised
 
+    def test_published_and_workspace_copies_stay_apart(self):
+        with mock.patch.object(backup, "PostgresStore", lambda url: self.store):
+            with mock.patch.dict("os.environ", {"DATABASE_URL": "x", "REPLIT_DEPLOYMENT": "1"}):
+                published = backup.from_environment(Path("j"), Path("s"), lambda: b"")
+            with mock.patch.dict("os.environ", {"DATABASE_URL": "x"}, clear=True):
+                workspace = backup.from_environment(Path("j"), Path("s"), lambda: b"")
+        self.assertEqual(sorted(published.sources), ["published/app_settings.json",
+                                                     "published/journal.sqlite3"])
+        self.assertTrue(all(n.startswith("workspace/") for n in workspace.sources))
+
     def test_no_database_means_no_backup(self):
         with mock.patch.dict("os.environ", {}, clear=True):
             self.assertIsNone(backup.from_environment(Path("j"), Path("s"), lambda: b""))

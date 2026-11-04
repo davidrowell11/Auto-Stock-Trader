@@ -137,7 +137,10 @@ def from_environment(journal_path: Path, settings_path: Path,
     except Exception as exc:
         log.warning("Couldn't reach the database for backups: %s", exc)
         return None
+    # The published bot and a copy running in the Replit workspace may share one database:
+    # each keeps its own files so neither overwrites the other's memory.
+    where = "published" if os.environ.get("REPLIT_DEPLOYMENT") else "workspace"
     return Backup(store, {
-        "journal.sqlite3": (journal_path, journal_snapshot),
-        "app_settings.json": (settings_path, read_file(settings_path)),
+        f"{where}/journal.sqlite3": (journal_path, journal_snapshot),
+        f"{where}/app_settings.json": (settings_path, read_file(settings_path)),
     })
