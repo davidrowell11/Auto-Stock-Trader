@@ -34,6 +34,10 @@ class _DashboardState extends State<Dashboard> {
   LiveStatus? liveStatus;
   Timer? timer;
   Timer? liveTimer; // the "What the bot is doing" section refreshes faster
+  bool refreshing = false,
+      liveRefreshing = false; // no pile-up if the server is slow
+  bool refreshAgain =
+      false; // asked for while one was running (e.g. after Start)
 
   bool get live => widget.mode == 'live';
 
@@ -51,11 +55,16 @@ class _DashboardState extends State<Dashboard> {
   /// Just the live status: cheap for the server, so it updates every few seconds.
   Future<void> refreshLive() async {
     // Only while the bot runs; when stopped, the 30-second refresh is enough.
-    if (!mounted || summary?.running != true) return;
+    if (!mounted || summary?.running != true || liveRefreshing) return;
+    liveRefreshing = true;
     try {
       final l = await api.live(widget.mode);
       if (mounted) setState(() => liveStatus = l);
-    } catch (_) {} // older servers don't have it; the main refresh shows errors
+    } catch (_) {
+      // older servers don't have it; the main refresh shows errors
+    } finally {
+      liveRefreshing = false;
+    }
   }
 
   @override
@@ -69,6 +78,11 @@ class _DashboardState extends State<Dashboard> {
 
   Future<void> refresh() async {
     if (!mounted) return;
+    if (refreshing) {
+      refreshAgain = true;
+      return;
+    }
+    refreshing = true;
     try {
       final m = widget.mode;
       final results = await Future.wait([
@@ -125,6 +139,12 @@ class _DashboardState extends State<Dashboard> {
       // e.g. the server sent something the app doesn't understand
       if (mounted) {
         setState(() => error = 'Unexpected reply from the bot server');
+      }
+    } finally {
+      refreshing = false;
+      if (refreshAgain) {
+        refreshAgain = false;
+        unawaited(refresh());
       }
     }
   }

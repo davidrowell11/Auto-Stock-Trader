@@ -141,5 +141,24 @@ class EngineLiveDataTests(unittest.TestCase):
         self.assertTrue([o for o in self.broker.orders if o.symbol == "AAPL"])
 
 
+class PlainErrorTests(unittest.TestCase):
+    def test_messages(self):
+        from autotrader.analyst import plain_error
+
+        class E(Exception):
+            def __init__(self, msg, status=None):
+                super().__init__(msg)
+                self.status_code = status
+
+        low = E("Error code: 400 - {'message': 'Your credit balance is too low to access the Anthropic API.'}", 400)
+        self.assertIn("out of API credits", plain_error(low))
+        self.assertIn("ANTHROPIC_API_KEY", plain_error(E("invalid x-api-key", 401)))
+        self.assertIn("too many requests", plain_error(E("rate_limit_error", 429)))
+        self.assertIn("busy", plain_error(E("overloaded_error", 529)))
+        self.assertIn("Couldn't reach", plain_error(E("Connection error.")))
+        self.assertTrue(plain_error(E("x" * 500)).startswith("Claude API error: "))
+        self.assertLess(len(plain_error(E("x" * 500))), 230)
+
+
 if __name__ == "__main__":
     unittest.main()

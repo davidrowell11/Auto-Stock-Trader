@@ -41,8 +41,20 @@ abstract class TraderApi {
 }
 
 class HttpApi implements TraderApi {
-  HttpApi(String baseUrl, this.token)
-    : base = baseUrl.replaceAll(RegExp(r'/+$'), '');
+  HttpApi(String baseUrl, this.token) : base = normalizeUrl(baseUrl);
+
+  /// "auto-stock-trader.replit.app" works as well as "https://auto-stock-trader.replit.app/".
+  static String normalizeUrl(String url) {
+    var u = url.trim().replaceAll(RegExp(r'/+$'), '');
+    if (u.isNotEmpty && !u.contains('://')) {
+      // Local servers (this computer or the home network) usually have no HTTPS.
+      final local = RegExp(
+        r'^(localhost|127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)',
+      ).hasMatch(u);
+      u = '${local ? 'http' : 'https'}://$u';
+    }
+    return u;
+  }
 
   final String base;
   final String token;
@@ -52,7 +64,12 @@ class HttpApi implements TraderApi {
     'Content-Type': 'application/json',
   };
 
-  Future<dynamic> _send(String method, String path, [Object? body]) async {
+  Future<dynamic> _send(
+    String method,
+    String path, [
+    Object? body,
+    Duration timeout = const Duration(seconds: 20),
+  ]) async {
     final uri = Uri.parse('$base$path');
     final http.Response res;
     try {
@@ -65,8 +82,7 @@ class HttpApi implements TraderApi {
         'PUT' => http.put(uri, headers: _headers, body: jsonEncode(body ?? {})),
         _ => http.get(uri, headers: _headers),
       };
-      // The analyst chat can take a while (it searches the news), so allow 90 seconds.
-      res = await request.timeout(const Duration(seconds: 90));
+      res = await request.timeout(timeout);
     } catch (e) {
       throw ApiException(
         "Can't reach the bot server. Check the address and that it's running.",
@@ -192,9 +208,10 @@ class HttpApi implements TraderApi {
 
   @override
   Future<String> ask(String question, String mode) async =>
+      // The analyst chat can take a while (it searches the news), so allow 90 seconds.
       (await _send('POST', '/api/ask', {
             'question': question,
             'mode': mode,
-          }))['answer']
+          }, const Duration(seconds: 90)))['answer']
           as String;
 }

@@ -103,7 +103,7 @@ class Analyst:
                     fallbacks="default",
                 )
             except Exception as exc:
-                raise AnalystUnavailable(f"Claude API error: {exc}") from exc
+                raise AnalystUnavailable(plain_error(exc)) from exc
 
             if response.stop_reason == "refusal":
                 raise AnalystUnavailable("The analyst declined to review this stock")
@@ -115,6 +115,26 @@ class Analyst:
                 continue
             break
         raise AnalystUnavailable("The analyst didn't return a view")
+
+
+def plain_error(exc: Exception) -> str:
+    """A Claude API failure in words the app can show, with what to do about it."""
+    text = str(exc)
+    status = getattr(exc, "status_code", None)
+    lower = text.lower()
+    if "credit balance" in lower:
+        return ("The AI analyst's Anthropic account is out of API credits. Add credits at "
+                "console.anthropic.com under Plans & Billing (separate from a Claude.ai plan).")
+    if status in (401, 403) or "authentication_error" in lower or "permission_error" in lower:
+        return ("The server's ANTHROPIC_API_KEY isn't working. Make a new key at "
+                "console.anthropic.com and update it in Replit Secrets.")
+    if status == 429 or "rate_limit" in lower:
+        return "The AI analyst is getting too many requests. Try again in a minute."
+    if status in (500, 502, 503, 529) or "overloaded" in lower:
+        return "The AI analyst is busy right now. Try again in a minute."
+    if "connection" in lower or "timed out" in lower or "timeout" in lower:
+        return "Couldn't reach the AI analyst. Try again in a minute."
+    return f"Claude API error: {text[:200]}"
 
 
 def _to_view(data) -> AnalystView:
@@ -155,7 +175,7 @@ def ask(client, question: str, context: dict, model: str = MODEL) -> str:
                 fallbacks="default",
             )
         except Exception as exc:
-            raise AnalystUnavailable(f"Claude API error: {exc}") from exc
+            raise AnalystUnavailable(plain_error(exc)) from exc
         if response.stop_reason == "refusal":
             raise AnalystUnavailable("The analyst declined to answer that")
         if response.stop_reason != "pause_turn":
