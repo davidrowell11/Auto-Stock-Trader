@@ -24,12 +24,19 @@ calendar, so holidays and early closes are handled).
    and sells when the stop is hit, the trend breaks (close below the 50-day
    average), or a penny stock's trading volume dries up.
 2. **Looks for new buys.** Scores every stock in its list for a strong,
-   steady uptrend and rejects anything that fails a safety check.
-3. **Checks the experts.** The top candidates get a score boost for
+   steady uptrend and rejects anything that fails a safety check. The list is
+   the fixed set of large names in `universe.py` plus, each day, Alpaca's
+   most-active and top-gaining stocks (`signals/screener.py`; set
+   `AUTOTRADER_SCREENER=false` to turn that off).
+3. **Reads the news.** Before any buy it pulls the last two days of headlines
+   for the stock from Alpaca's news feed. A share offering, investigation,
+   bankruptcy, delisting, executive departure or short-seller report blocks
+   the buy; the headlines also go to the AI analyst.
+4. **Checks the experts.** The top candidates get a score boost for
    open-market insider buying (SEC Form 4) and for purchases by members of
    Congress whose past picks actually did well (a leaderboard built from
    their trade history).
-4. **Asks the AI analyst.** Claude reviews each buy the rules want to make,
+5. **Asks the AI analyst.** Claude reviews each buy the rules want to make,
    searches recent news for red flags (earnings next week, share offerings,
    fraud, hype), and says buy or skip with a confidence score and a short
    reason. It can only veto a buy. Its views are saved as a scorecard.

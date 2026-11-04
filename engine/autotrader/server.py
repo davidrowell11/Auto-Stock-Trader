@@ -702,7 +702,7 @@ def main() -> None:
     import uvicorn
 
     from .broker.alpaca_broker import AlpacaBroker
-    from .signals import EarningsCalendar, QuiverClient, SecClient, SignalBook
+    from .signals import EarningsCalendar, NewsDesk, QuiverClient, Screener, SecClient, SignalBook
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     token = os.environ.get("AUTOTRADER_APP_TOKEN", "")
@@ -723,6 +723,8 @@ def main() -> None:
 
     sec = SecClient()
     earnings = EarningsCalendar()
+    screener = Screener() if os.environ.get("AUTOTRADER_SCREENER", "true").lower() != "false" else None
+    news = NewsDesk()
     skip_results = os.environ.get("AUTOTRADER_SKIP_READINESS", "").lower() == "true"
     runners = {}
     for mode in (Mode.TEST, Mode.LIVE):
@@ -734,6 +736,8 @@ def main() -> None:
             "signals": SignalBook(sec=sec, quiver=QuiverClient(), bars_fetch=bars_fetch),
             "analyst": analyst,
             "earnings": earnings.reports_soon,
+            "screener": screener.symbols if screener else None,
+            "news": news.check,
         }
         if mode is Mode.LIVE and not live_enabled:
             store.update(mode, {"running": False})

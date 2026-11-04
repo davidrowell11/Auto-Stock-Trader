@@ -20,6 +20,7 @@ from .config import HARD_LIMITS, Mode, Settings
 from .journal import Journal, StopState
 from .market import MARKET, Mood, market_mood
 from .models import Bar, OrderRequest, Position, Side, Signal
+from .signals.news import NewsCheck
 from .risk import RiskManager
 from .universe import build_universe, sector_of
 
@@ -105,7 +106,9 @@ class Engine:
                  earnings: Callable[[str], str | None] | None = None,
                  pause_buying: str | None = None,
                  progress: Callable[[str], None] = lambda step: None,
-                 session: str = "regular") -> None:
+                 session: str = "regular",
+                 screener: Callable[[], list[str]] | None = None,
+                 news: Callable[[str], "NewsCheck"] | None = None) -> None:
         self.broker = broker
         self.s = settings
         self.journal = journal
@@ -127,6 +130,10 @@ class Engine:
         self.progress = progress
         # "regular", or "pre"/"after" for pre-market and after-hours trading (limit orders only).
         self.session = session
+        # Live data: today's most-active and top-gaining stocks to scan too, and recent headlines.
+        self.screener = screener
+        self.news = news
+        self.news_seen: dict[str, NewsCheck] = {}
 
     @property
     def extended(self) -> bool:
@@ -221,6 +228,12 @@ class Engine:
                       if positions else "It doesn't own any stocks yet")
 
         universe = build_universe(self.s.always_watch, self.s.never_buy)
+        if self.screener is not None:
+            extra = [s for s in self.screener() if s not in universe
+                     and s not in {n.upper() for n in self.s.never_buy}]
+            if extra:
+                self.progress(f"Adding {len(extra)} of today's most active and top-gaining stocks")
+                universe = [*universe, *extra]
         symbols = sorted(set(universe) | {p.symbol for p in positions} | {MARKET})
         self.progress(f"Getting prices for {len(symbols)} stocks")
         bars = self.broker.get_daily_bars(symbols, HISTORY_DAYS)
@@ -430,6 +443,7 @@ class Engine:
                     "score": sig.score,
                     "average_daily_move_dollars": round(sig.atr, 4),
                     "why_the_rules_like_it": sig.reasons,
+                    "recent_headlines": self.news_seen.get(sig.symbol, NewsCheck()).headlines,
                 })
             except AnalystUnavailable as exc:
                 log.warning("Analyst unavailable for %s: %s", sig.symbol, exc)
@@ -486,8 +500,16 @@ class Engine:
                 return ["no penny stocks while the market is weak"]
             if self.analyst is None and self.penny_needs_analyst:
                 return ["penny stocks are only bought with the AI analyst's approval"]
-            return penny.penny_buy_problems(asset, history, sig, self.s, self.filings_check)
+            return (penny.penny_buy_problems(asset, history, sig, self.s, self.filings_check)
+                    or self._news_problems(sig.symbol))
         dv = ind.avg_dollar_volume(history, 20)
         if dv is None or dv < self.s.min_dollar_volume:
             return ["not enough trading volume"]
-        return []
+        return self._news_problems(sig.symbol)
+
+    def _news_problems(self, symbol: str) -> list[str]:
+        if self.news is None:
+            return []
+        check = self.news(symbol)
+        self.news_seen[symbol] = check
+        return [f"recent news: {check.red_flag}"] if check.red_flag else []
