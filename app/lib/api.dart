@@ -30,6 +30,9 @@ abstract class TraderApi {
   Future<BotSettings> updateSettings(String mode, Map<String, dynamic> changes);
   Future<void> setRunning(String mode, bool running);
   Future<KillResult> kill(String mode, {required bool sellAll});
+
+  /// Hands the stocks the bot isn't tracking over to it. Returns their symbols.
+  Future<List<String>> adopt(String mode);
   Future<WeeklyReport> weekly(String mode);
   Future<List<PriceBar>> bars(
     String symbol, {
@@ -199,6 +202,14 @@ class HttpApi implements TraderApi {
   @override
   Future<void> setRunning(String mode, bool running) =>
       _send('POST', '/api/$mode/${running ? 'start' : 'stop'}');
+
+  @override
+  Future<List<String>> adopt(String mode) async {
+    final r = await _send('POST', '/api/$mode/adopt');
+    return [
+      for (final a in r['adopted'] as List) (a as Map)['symbol'].toString(),
+    ];
+  }
 
   @override
   Future<KillResult> kill(String mode, {required bool sellAll}) async {

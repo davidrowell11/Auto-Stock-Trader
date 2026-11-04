@@ -348,10 +348,20 @@ class _DashboardState extends State<Dashboard> {
           if ((s.otherHoldings ?? 0) >= 1)
             Padding(
               padding: const EdgeInsets.only(top: 10),
-              child: Text(
-                'Plus ${moneyRound.format(s.otherHoldings)} in stocks the bot '
-                "didn't buy. It leaves those alone and doesn't count them as invested.",
-                style: t.bodySmall?.copyWith(color: AppColors.muted),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      'Plus ${moneyRound.format(s.otherHoldings)} in stocks the bot '
+                      "isn't managing. It leaves them alone and doesn't count them.",
+                      style: t.bodySmall?.copyWith(color: AppColors.muted),
+                    ),
+                  ),
+                  TextButton(
+                    onPressed: _adopt,
+                    child: const Text('Let the bot manage'),
+                  ),
+                ],
               ),
             ),
           const SizedBox(height: 12),
@@ -546,6 +556,45 @@ class _DashboardState extends State<Dashboard> {
       () => api.updateSettings('test', {'budget': v}),
       'Test budget saved: ${moneyRound.format(v)}',
     );
+  }
+
+  Future<void> _adopt() async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (c) => AlertDialog(
+        title: const Text('Let the bot manage these stocks?'),
+        content: Text(
+          'The bot will watch them with safety stops and sell them by its own '
+          'rules, as if it had bought them. Use this for stocks it bought and '
+          'lost track of, or ones you want it to look after'
+          '${live ? ' in your real account' : ''}.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(c),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(c, true),
+            child: const Text('Hand them over'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    String msg;
+    try {
+      final names = await api.adopt(widget.mode);
+      msg = names.isEmpty
+          ? 'Nothing to hand over'
+          : 'Now managing ${names.join(', ')}';
+    } on ApiException catch (e) {
+      msg = e.message;
+    }
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+    }
+    await refresh();
   }
 
   Future<void> _killSwitch() async {
