@@ -37,6 +37,9 @@ abstract class TraderApi {
     String mode = 'test',
   });
   Future<String> ask(String question, String mode);
+
+  /// The same answer, piece by piece as the analyst writes it.
+  Stream<String> askStream(String question, String mode);
   Future<Readiness> readiness();
   Future<Learning> learning(String mode);
 
@@ -285,4 +288,59 @@ class HttpApi implements TraderApi {
             'mode': mode,
           }, const Duration(seconds: 90)))['answer']
           as String;
+
+  @override
+  Stream<String> askStream(String question, String mode) async* {
+    final client = http.Client();
+    try {
+      final req = http.Request('POST', Uri.parse('$base/api/ask/stream'))
+        ..headers.addAll(_headers)
+        ..body = jsonEncode({'question': question, 'mode': mode});
+      final http.StreamedResponse res;
+      try {
+        res = await client.send(req).timeout(const Duration(seconds: 30));
+      } catch (_) {
+        throw ApiException(
+          "Can't reach the bot server. Check the address and that it's running.",
+        );
+      }
+      if (res.statusCode == 404 || res.statusCode == 405) {
+        // A server from before streaming: ask the old way.
+        yield await ask(question, mode);
+        return;
+      }
+      if (res.statusCode >= 400) {
+        final body = await res.stream.bytesToString();
+        String? detail;
+        try {
+          final j = jsonDecode(body);
+          if (j is Map) detail = j['detail']?.toString();
+        } on FormatException {
+          detail = null;
+        }
+        throw ApiException(detail ?? 'Server error ${res.statusCode}');
+      }
+      // A long news search can go quiet for a while, so allow 90 seconds between pieces.
+      final lines = res.stream
+          .transform(utf8.decoder)
+          .transform(const LineSplitter())
+          .timeout(const Duration(seconds: 90));
+      try {
+        await for (final line in lines) {
+          if (line.trim().isEmpty) continue;
+          final j = jsonDecode(line) as Map<String, dynamic>;
+          if (j['error'] != null) throw ApiException(j['error'].toString());
+          final text = j['text'];
+          if (text is String && text.isNotEmpty) yield text;
+          if (j['done'] == true) break;
+        }
+      } on ApiException {
+        rethrow;
+      } catch (_) {
+        throw ApiException('The answer was cut off. Try asking again.');
+      }
+    } finally {
+      client.close();
+    }
+  }
 }

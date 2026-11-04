@@ -48,9 +48,11 @@ ThemeData buildTheme(Brightness brightness) {
     colorScheme: scheme,
     brightness: brightness,
   );
-  final text = GoogleFonts.interTextTheme(base.textTheme).apply(
-    bodyColor: dark ? Colors.white : const Color(0xFF0E1525),
-    displayColor: dark ? Colors.white : const Color(0xFF0E1525),
+  final text = _steadyDigits(
+    GoogleFonts.interTextTheme(base.textTheme).apply(
+      bodyColor: dark ? Colors.white : const Color(0xFF0E1525),
+      displayColor: dark ? Colors.white : const Color(0xFF0E1525),
+    ),
   );
   return base.copyWith(
     scaffoldBackgroundColor: dark ? AppColors.darkBg : AppColors.lightBg,
@@ -74,5 +76,29 @@ ThemeData buildTheme(Brightness brightness) {
     ),
     sliderTheme: SliderThemeData(activeTrackColor: accent, thumbColor: accent),
     dividerColor: dark ? Colors.white10 : Colors.black12,
+  );
+}
+
+/// Every digit the same width, so prices and totals line up in columns and
+/// don't jiggle as they update.
+TextTheme _steadyDigits(TextTheme t) {
+  const f = [FontFeature.tabularFigures()];
+  TextStyle? s(TextStyle? x) => x?.copyWith(fontFeatures: f);
+  return t.copyWith(
+    displayLarge: s(t.displayLarge),
+    displayMedium: s(t.displayMedium),
+    displaySmall: s(t.displaySmall),
+    headlineLarge: s(t.headlineLarge),
+    headlineMedium: s(t.headlineMedium),
+    headlineSmall: s(t.headlineSmall),
+    titleLarge: s(t.titleLarge),
+    titleMedium: s(t.titleMedium),
+    titleSmall: s(t.titleSmall),
+    bodyLarge: s(t.bodyLarge),
+    bodyMedium: s(t.bodyMedium),
+    bodySmall: s(t.bodySmall),
+    labelLarge: s(t.labelLarge),
+    labelMedium: s(t.labelMedium),
+    labelSmall: s(t.labelSmall),
   );
 }

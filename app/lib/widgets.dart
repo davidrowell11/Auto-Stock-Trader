@@ -136,12 +136,15 @@ class Pill extends StatelessWidget {
           Icon(icon, size: 13, color: color),
           const SizedBox(width: 4),
         ],
-        Text(
-          text,
-          style: TextStyle(
-            color: color,
-            fontSize: 12,
-            fontWeight: FontWeight.w600,
+        Flexible(
+          child: Text(
+            text,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              color: color,
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+            ),
           ),
         ),
       ],
@@ -375,4 +378,117 @@ class PageFrame extends StatelessWidget {
         ? list
         : RefreshIndicator(onRefresh: onRefresh!, child: list);
   }
+}
+
+/// A soft pulsing placeholder shown while a card's data loads.
+class SkeletonCard extends StatefulWidget {
+  const SkeletonCard({super.key, this.height = 120, this.lines = 3});
+  final double height;
+  final int lines;
+
+  @override
+  State<SkeletonCard> createState() => _SkeletonCardState();
+}
+
+class _SkeletonCardState extends State<SkeletonCard>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController pulse = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 1100),
+  )..repeat(reverse: true);
+
+  @override
+  void dispose() {
+    pulse.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final base = (isDark(context) ? Colors.white : Colors.black);
+    Widget bar(double widthFactor) => FractionallySizedBox(
+      widthFactor: widthFactor,
+      alignment: Alignment.centerLeft,
+      child: Container(
+        height: 12,
+        decoration: BoxDecoration(
+          color: base.withValues(alpha: 0.08),
+          borderRadius: BorderRadius.circular(6),
+        ),
+      ),
+    );
+    return Semantics(
+      label: 'Loading',
+      child: FadeTransition(
+        opacity: Tween(begin: 0.45, end: 1.0).animate(pulse),
+        child: GlassCard(
+          child: SizedBox(
+            height: widget.height - 36,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+              children: [
+                for (var i = 0; i < widget.lines; i++)
+                  bar(i == 0 ? 0.45 : (i.isEven ? 0.7 : 0.9)),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Three bouncing dots: the analyst is writing.
+class TypingDots extends StatefulWidget {
+  const TypingDots({super.key});
+
+  @override
+  State<TypingDots> createState() => _TypingDotsState();
+}
+
+class _TypingDotsState extends State<TypingDots>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController c = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 1200),
+  )..repeat();
+
+  @override
+  void dispose() {
+    c.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => Semantics(
+    label: 'The analyst is writing',
+    child: SizedBox(
+      height: 20,
+      width: 38,
+      child: AnimatedBuilder(
+        animation: c,
+        builder: (context, _) => Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            for (var i = 0; i < 3; i++)
+              Transform.translate(
+                offset: Offset(
+                  0,
+                  -4 * max(0, sin((c.value * 2 * pi) - i * 0.9)).toDouble(),
+                ),
+                child: Container(
+                  width: 8,
+                  height: 8,
+                  decoration: BoxDecoration(
+                    color: AppColors.muted,
+                    shape: BoxShape.circle,
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    ),
+  );
 }

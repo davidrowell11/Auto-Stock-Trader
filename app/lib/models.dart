@@ -440,9 +440,13 @@ class Learning {
     required this.finishedTrades,
     required this.needs,
     required this.everyDays,
+    this.scorecard,
   });
   final LearnedMemory? active, proposed;
   final int finishedTrades, needs, everyDays;
+
+  /// How the analyst's approved and blocked stocks did a month later (null until graded).
+  final Scorecard? scorecard;
 
   factory Learning.fromJson(Map<String, dynamic> j) => Learning(
     active: j['active'] == null ? null : LearnedMemory.fromJson(j['active']),
@@ -452,6 +456,63 @@ class Learning {
     finishedTrades: (j['finished_trades'] as num).toInt(),
     needs: (j['needs'] as num).toInt(),
     everyDays: (j['every_days'] as num).toInt(),
+    scorecard: j['scorecard'] == null
+        ? null
+        : Scorecard.fromJson(j['scorecard'] as Map<String, dynamic>),
+  );
+}
+
+/// One side of the scorecard: the stocks the analyst approved, or the ones it blocked.
+class ScoreSide {
+  ScoreSide({required this.calls, this.avgReturn, this.avgVsMarket});
+  final int calls;
+  final double? avgReturn, avgVsMarket;
+  factory ScoreSide.fromJson(Map<String, dynamic> j) => ScoreSide(
+    calls: (j['calls'] as num).toInt(),
+    avgReturn: (j['avg_return'] as num?)?.toDouble(),
+    avgVsMarket: (j['avg_vs_market'] as num?)?.toDouble(),
+  );
+}
+
+/// A graded call: a stock and how it did against the market over the next month.
+typedef GradedCall = ({String symbol, String day, double vsMarket});
+
+/// Were the analyst's calls right? Graded about a month after each review.
+class Scorecard {
+  Scorecard({
+    required this.approved,
+    required this.blocked,
+    required this.waiting,
+    required this.verdict,
+    required this.horizonDays,
+    this.missed = const [],
+    this.letThrough = const [],
+  });
+  final ScoreSide approved, blocked;
+  final int waiting, horizonDays;
+  final String verdict;
+  final List<GradedCall> missed, letThrough;
+
+  bool get hasVerdict =>
+      approved.avgVsMarket != null && blocked.avgVsMarket != null;
+
+  static List<GradedCall> _calls(Object? raw) => [
+    for (final c in (raw as List?) ?? const [])
+      (
+        symbol: c['symbol'] as String,
+        day: c['day'] as String,
+        vsMarket: (c['vs_market'] as num).toDouble(),
+      ),
+  ];
+
+  factory Scorecard.fromJson(Map<String, dynamic> j) => Scorecard(
+    approved: ScoreSide.fromJson(j['approved'] as Map<String, dynamic>),
+    blocked: ScoreSide.fromJson(j['blocked'] as Map<String, dynamic>),
+    waiting: (j['waiting'] as num?)?.toInt() ?? 0,
+    verdict: j['verdict'] as String,
+    horizonDays: (j['horizon_days'] as num?)?.toInt() ?? 20,
+    missed: _calls(j['missed']),
+    letThrough: _calls(j['let_through']),
   );
 }
 
