@@ -170,4 +170,3 @@ PYTHONPATH=.:tests python -m unittest discover -s tests
 
 * Hedge fund (13F) signals.
 * Push notifications for trades and alerts (the app's activity feed covers this for now).
-* Strategy lab: test new strategies on paper next to the main bot.

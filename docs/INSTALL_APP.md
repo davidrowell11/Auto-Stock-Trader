@@ -35,7 +35,37 @@ If step 4 doesn't show the button, open **Terminal** and paste
 1. On the phone, download the file and open it.
 2. Allow "install unknown apps" for your browser when asked.
 
+## Connecting the app to your bot
+
+The first time the app opens it asks for two things:
+
+- **Server address:** your Replit app's address, for example
+  `auto-stock-trader.replit.app`. You can leave off `https://`; the app adds it.
+- **App token:** the value of the `AUTOTRADER_APP_TOKEN` secret, from the
+  **Secrets** tool in your Replit project.
+
+The app keeps both in the device's secure storage, so you only enter them once
+per device. To look around before the bot is set up, tap **Explore with sample
+data first** instead.
+
+## Where things are
+
+- **Test** and **Live:** the account, what the bot is doing right now,
+  holdings, activity, and (Live) buys waiting for your approval.
+- **AI analyst:** its recent calls, a chat box, **What the bot learned**
+  (weekly lessons and how much each idea source counts) and the
+  **Strategy lab** (rule changes it tested). In Live, new lessons and rule
+  changes wait here for **Use in Live** or **Not now**.
+- **Settings:** budgets, approve mode, trading hours, **AI analyst costs**
+  (cheaper reviews and the monthly spending cap), and your always-watch and
+  never-buy lists.
+
 ## Updating to a new version
+
+When the bot gets new features, the server (Replit) is updated first, then a
+new app is published on the
+[App downloads](https://github.com/davidrowell11/Auto-Stock-Trader/releases/tag/app-latest)
+page. Install it the same way as the first time.
 
 Every build has the same app name and ID and a higher version number, so a new
 download replaces the old app instead of installing a second copy. Your server
@@ -144,14 +174,11 @@ flutter build web --release --no-web-resources-cdn
 Host the `app/build/web` folder anywhere that serves static files. Browsers
 have no Face ID, so the web version asks you to confirm before opening Live.
 
-## Updating
+## Updating a build you made yourself
 
-If you downloaded the app, download the new file from the same
-[App downloads](https://github.com/davidrowell11/Auto-Stock-Trader/releases/tag/app-latest)
-page and replace the old app. If you built it yourself, pull the latest code
-(`git pull`), run `flutter pub get`, and repeat the build and install steps.
-Your server address and token stay saved on each device (except Android, see
-above).
+Pull the latest code (`git pull`), run `flutter pub get`, and repeat the build
+and install steps. Downloaded apps update as described in
+[Updating to a new version](#updating-to-a-new-version).
 
 ## Face ID and fingerprint
 
