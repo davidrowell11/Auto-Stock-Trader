@@ -443,8 +443,10 @@ class BotRunner:
             engine = self.engine()
             mine, working = engine.sync_holdings()
             owned = {p.symbol: p.qty for p in mine}
+            never = {s.upper() for s in engine.s.never_buy}  # you told it to stay away from these
             extra = [p for p in self.broker.get_positions()
-                     if p.symbol not in working and p.qty - owned.get(p.symbol, 0.0) > DUST]
+                     if p.symbol not in working and p.symbol.upper() not in never
+                     and p.qty - owned.get(p.symbol, 0.0) > DUST]
             if not extra:
                 return {"adopted": []}
             try:
@@ -458,8 +460,10 @@ class BotRunner:
                 if state is None:
                     history = bars.get(p.symbol) or []
                     atr = ind.atr(history, 14) if history else None
-                    stop = (strategy.initial_stop(p.avg_price, atr, strategy.stop_multiple(p.current_price, engine.s))
-                            if atr else p.avg_price * (1 - HARD_LIMITS.max_stop_loss_pct))
+                    # Measured from today's price, not the purchase price: a stock that already
+                    # fell would otherwise be under its new stop and sold on the next check.
+                    stop = (strategy.initial_stop(p.current_price, atr, strategy.stop_multiple(p.current_price, engine.s))
+                            if atr else p.current_price * (1 - HARD_LIMITS.max_stop_loss_pct))
                     state = StopState(p.avg_price, stop, max(p.avg_price, p.current_price))
                 state.qty = p.qty
                 self.journal.save_stop(self.mode.value, p.symbol, state)

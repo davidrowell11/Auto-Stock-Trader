@@ -100,6 +100,14 @@ class AlpacaBroker(Broker):
             for sym, bars in result.items()
         }
 
+    def equity_history(self, days: int) -> list[tuple[datetime, float]]:
+        from alpaca.trading.requests import GetPortfolioHistoryRequest
+
+        h = self.trading.get_portfolio_history(GetPortfolioHistoryRequest(period=f"{days // 30}M" if days >= 30 else f"{max(1, days)}D",
+                                                                         timeframe="1D"))
+        return [(datetime.fromtimestamp(t, timezone.utc), float(e))
+                for t, e in zip(h.timestamp or [], h.equity or []) if e]
+
     def get_asset(self, symbol: str) -> Asset:
         a = self.trading.get_asset(symbol)
         exchange = getattr(a.exchange, "value", str(a.exchange))

@@ -5,8 +5,12 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 
-_FUND = re.compile(r"\b(ETF|ETN|Shares|Fund|Trust|ProShares|Direxion)\b", re.I)
-_LEVERAGED = re.compile(r"\b(\d(\.\d+)?x|Ultra\w*|Bear|Bull|Inverse|Leveraged|Short)\b", re.I)
+_FUND = re.compile(r"\b(ETFs?|ETNs?|Shares|Fund|Trust|ProShares|Direxion)\b", re.I)
+# "Short" alone means a bet against something; "Short-Term", "Short Treasury" and the like don't.
+_LEVERAGED = re.compile(
+    r"\b(\d(\.\d+)?x|Ultra(Pro|Short)?|Bear|Bull|Inverse|Leveraged"
+    r"|Short(?![- ]?(Term|Duration|Maturity|Treasury|Bond|Income|Government|Corporate|Municipal)))\b",
+    re.I)
 
 
 @dataclass(frozen=True)

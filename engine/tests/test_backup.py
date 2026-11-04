@@ -64,6 +64,11 @@ class BackupTests(unittest.TestCase):
         b.restore()
         self.assertEqual(settings.read_text(), "local")
 
+    def test_a_database_error_at_start_never_stops_the_bot(self):
+        _, _, b = self.make([None])
+        self.store.get = mock.Mock(side_effect=RuntimeError("timeout"))
+        self.assertEqual(b.restore(), [])  # logged; the bot starts with empty files
+
     def test_a_backup_problem_never_stops_the_bot(self):
         holder = [Journal()]
         _, _, b = self.make(holder)
@@ -83,6 +88,18 @@ class BackupTests(unittest.TestCase):
     def test_no_database_means_no_backup(self):
         with mock.patch.dict("os.environ", {}, clear=True):
             self.assertIsNone(backup.from_environment(Path("j"), Path("s"), lambda: b""))
+
+
+class SeedEquityTests(unittest.TestCase):
+    def test_a_fresh_history_starts_from_the_brokers(self):
+        from datetime import datetime, timezone
+
+        j = Journal()
+        days = [(datetime(2026, 11, d, 21, tzinfo=timezone.utc), 100_000.0 + d) for d in (2, 3)]
+        self.assertEqual(j.seed_equity("test", days), 2)
+        self.assertEqual(j.peak_equity("test"), 100_003)
+        self.assertEqual(j.seed_equity("test", days), 0)  # only ever once
+        self.assertEqual(len(j.equity_history("test")), 2)
 
 
 if __name__ == "__main__":

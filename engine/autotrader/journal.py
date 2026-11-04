@@ -102,10 +102,8 @@ class Journal:
         self.db.commit()
 
     def snapshot(self) -> bytes:
-        """A consistent copy of the whole journal, for backups."""
-        if hasattr(self.db, "serialize"):
-            return self.db.serialize()
-        return "\n".join(self.db.iterdump()).encode()  # pragma: no cover (Python < 3.11)
+        """A consistent copy of the whole journal file, for backups (needs Python 3.11+)."""
+        return self.db.serialize()
 
     # ----- trades -----
     def record_trade(self, mode: str, symbol: str, side: str, qty: float, price: float,
@@ -295,6 +293,16 @@ class Journal:
         return [(d, float(e)) for d, e in cur.fetchall()]
 
     # ----- equity history (for the drawdown brake) -----
+    def seed_equity(self, mode: str, points: list[tuple[datetime, float]]) -> int:
+        """Start an empty history from the broker's daily values (the chart and the drawdown
+        brake's peak). Does nothing once the bot has recorded values of its own."""
+        if self.db.execute("SELECT 1 FROM equity WHERE mode = ? LIMIT 1", (mode,)).fetchone():
+            return 0
+        with self.db:
+            self.db.executemany("INSERT INTO equity (ts, mode, equity) VALUES (?, ?, ?)",
+                                [(t.isoformat(timespec="seconds"), mode, e) for t, e in points])
+        return len(points)
+
     def record_equity(self, mode: str, equity: float) -> None:
         with self.db:
             self.db.execute("INSERT INTO equity (ts, mode, equity) VALUES (?, ?, ?)",
