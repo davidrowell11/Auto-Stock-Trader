@@ -54,6 +54,12 @@ class AfterHoursEngineTests(unittest.TestCase):
         self.assertAlmostEqual(sell.limit_price, round(price * 0.98, 2))
         self.assertTrue(report.sells)
 
+    def test_leveraged_funds_are_never_bought(self):
+        self.broker.assets["AAPL"] = Asset("AAPL", exchange="NASDAQ",
+                                           name="Direxion Daily AAPL Bull 2X Shares")
+        engine(self.broker, self.journal, "regular").run_cycle()
+        self.assertEqual(self.broker.orders, [])
+
     def test_buys_wait_for_regular_hours_when_switched_off(self):
         report = engine(self.broker, self.journal, "pre", after_hours_buys=False).run_cycle()
         self.assertEqual(self.broker.orders, [])

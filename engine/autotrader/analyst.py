@@ -63,7 +63,25 @@ SUBMIT_TOOL = {
         "additionalProperties": False,
     },
 }
-WEB_SEARCH_TOOL = {"type": "web_search_20260209", "name": "web_search", "max_uses": 3}
+# The basic search tool. The newer web_search_20260209 (with dynamic filtering) failed on most
+# Opus reviews on 2026-11-04 ("web search failed"), which left the analyst unsure and its
+# confidence low, while Haiku's basic search worked every time.
+WEB_SEARCH_TOOL = {"type": "web_search_20250305", "name": "web_search", "max_uses": 3}
+
+
+def search_problems(response) -> list[str]:
+    """Error codes from any web searches in this response that failed."""
+    out = []
+    for block in getattr(response, "content", None) or []:
+        if getattr(block, "type", None) != "web_search_tool_result":
+            continue
+        content = getattr(block, "content", None)
+        code = getattr(content, "error_code", None)
+        if code is None and isinstance(content, dict):
+            code = content.get("error_code")
+        if code:
+            out.append(str(code))
+    return out
 
 
 @dataclass
@@ -120,6 +138,10 @@ class Analyst:
             except Exception as exc:
                 raise AnalystUnavailable(plain_error(exc)) from exc
 
+            problems = search_problems(response)
+            if problems:  # so the logs show why, if the analyst says it couldn't search
+                log.warning("Web search failed for %s (%s): %s", candidate.get("symbol"), model,
+                            ", ".join(problems))
             if response.stop_reason == "refusal":
                 raise AnalystUnavailable("The analyst declined to review this stock")
             for block in response.content:

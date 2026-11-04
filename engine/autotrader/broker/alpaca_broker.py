@@ -104,7 +104,8 @@ class AlpacaBroker(Broker):
         a = self.trading.get_asset(symbol)
         exchange = getattr(a.exchange, "value", str(a.exchange))
         return Asset(symbol=a.symbol, exchange=exchange, tradable=bool(a.tradable),
-                     fractionable=bool(getattr(a, "fractionable", False)))
+                     fractionable=bool(getattr(a, "fractionable", False)),
+                     name=str(getattr(a, "name", "") or ""))
 
     def submit_order(self, order: OrderRequest) -> str:
         """Place an order. Each one carries its own ID, so an order whose reply got lost on the

@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
+
+_FUND = re.compile(r"\b(ETF|ETN|Shares|Fund|Trust|ProShares|Direxion)\b", re.I)
+_LEVERAGED = re.compile(r"\b(\d(\.\d+)?x|Ultra\w*|Bear|Bull|Inverse|Leveraged|Short)\b", re.I)
 
 
 @dataclass(frozen=True)
@@ -24,10 +28,16 @@ class Asset:
     tradable: bool = True
     sector: str = "Unknown"
     fractionable: bool = False  # can be bought in fractions of a share
+    name: str = ""  # e.g. "Direxion Daily Semiconductor Bear 3X Shares"
 
     @property
     def is_otc(self) -> bool:
         return self.exchange.upper() in {"OTC", "OTCQX", "OTCQB", "PINK"}
+
+    @property
+    def is_leveraged_fund(self) -> bool:
+        """A 2x/3x or inverse fund. They lose value over multi-week holds, so they're never bought."""
+        return bool(_FUND.search(self.name) and _LEVERAGED.search(self.name))
 
 
 @dataclass
