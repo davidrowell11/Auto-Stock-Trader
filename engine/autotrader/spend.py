@@ -9,7 +9,9 @@ refuses new calls once the total reaches your cap. The month resets on the
 While capped, the bot treats the analyst as switched off: penny stocks aren't
 bought (they always need its approval) and other buys go ahead on the rules
 alone, exactly as when Claude can't be reached. The idea comes from ruClip's
-budget-gated agents: an agent stops when its budget is spent.
+budget-gated agents: an agent stops when its budget is spent. Calls already
+running when the cap is reached still finish, so a month can end a few
+cents over.
 
 Prices are list prices per million tokens and are an estimate: the Anthropic
 Console's billing page is the real number.
@@ -29,7 +31,20 @@ PRICES = {
     "claude-sonnet-5-5": (2.0, 10.0),
     "claude-haiku-5-5": (0.10, 0.50),
 }
-FALLBACK_PRICE = (5.0, 25.0)  # unknown model (e.g. a server-side fallback): assume Opus-class
+FALLBACK_PRICE = (5.0, 25.0)  # unknown model (e.g. an older Opus as a server-side fallback)
+
+
+def price_for(model: str) -> tuple[float, float]:
+    """List price for a model id, also matching dated snapshots such as "claude-haiku-5-5-2026...".
+
+    Unknown models are priced high on purpose, so the cap errs toward stopping early.
+    """
+    for name, price in PRICES.items():
+        if model == name or model.startswith(name + "-"):
+            return price
+    if "haiku" in model:
+        return PRICES["claude-haiku-5-5"]
+    return FALLBACK_PRICE
 WEB_SEARCH_PER_CALL = 10.0 / 1000
 
 
@@ -41,7 +56,7 @@ def cost_of(model: str, usage) -> float:
     """Estimated dollars for one response's usage."""
     if usage is None:
         return 0.0
-    price_in, price_out = PRICES.get(model, FALLBACK_PRICE)
+    price_in, price_out = price_for(model or "")
     g = lambda name: float(getattr(usage, name, 0) or 0)  # noqa: E731
     tokens_in = (g("input_tokens") + 1.25 * g("cache_creation_input_tokens")
                  + 0.1 * g("cache_read_input_tokens"))

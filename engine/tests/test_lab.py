@@ -95,6 +95,12 @@ class LabTests(unittest.TestCase):
         lab.undo("live")
         self.assertEqual(lab.rules("live"), {})
 
+    def test_live_is_offered_one_change_not_a_bundle(self):
+        lab = self.lab([1.0, 1.2, 0.8, (1.0, 0.15)], losers=[("BAD", 90, 97)])
+        self.store.data["test"]["lab_rules"] = {"min_score": 0.2}  # kept earlier; you said no for Live
+        lab.run()
+        self.assertEqual(self.store.data["live"]["lab_proposed"]["rules"], {"atr_stop_multiple": 2.5})
+
     def test_rejected_when_it_fails_on_unseen_prices(self):
         lab = self.lab([1.0, 1.2, 0.8, 0.85])  # gain of 0.05 is under the 0.10 needed
         entry = lab.run()

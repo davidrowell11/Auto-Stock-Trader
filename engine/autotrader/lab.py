@@ -122,9 +122,17 @@ def _summary(r: BacktestResult) -> dict:
             "win_rate": None if r.win_rate is None else round(r.win_rate, 3)}
 
 
-def _losers(journal: Journal) -> dict[str, float]:
-    """Losing trades in a replay, by "SYMBOL bought DATE", with their result."""
-    return {f"{o.symbol} bought {o.bought[:10]}": o.ret for o in outcomes(journal, "test") if o.ret < 0}
+def _trades(journal: Journal) -> dict[str, float]:
+    """Every finished trade in a replay, by "SYMBOL bought at $PRICE", with its result.
+
+    Both replays see the same prices, so the same entry has the same buy price in each.
+    (Replayed trades are stamped with today's date, so the date can't be the key.)
+    """
+    out: dict[str, float] = {}
+    for o in outcomes(journal, "test"):
+        key = f"{o.symbol} bought at ${o.buy_price:,.2f}"
+        out[key if key not in out else f"{key} (again)"] = o.ret
+    return out
 
 
 Backtest = Callable[..., BacktestResult]
@@ -204,19 +212,23 @@ class Lab:
             entry["verdict"] = "Better on older prices but not on the newer, unseen ones"
             return self._record(entry)
 
-        before, after = _losers(ja), _losers(jb)
-        fixed = sorted((k for k, r in before.items() if after.get(k, 0.0) > r),
-                       key=lambda k: before[k])[:5]
+        before, after = _trades(ja), _trades(jb)
+        losers = {k: r for k, r in before.items() if r < 0}
+        fixed = sorted((k for k, r in losers.items() if k not in after or after[k] > r),
+                       key=lambda k: losers[k])[:5]
         if not fixed:
             entry["verdict"] = "Better overall, but it didn't fix any of the current rules' losing trades"
             return self._record(entry)
-        entry["evidence"] = [f"{k}: {before[k]:+.1%} → "
+        entry["evidence"] = [f"{k}: {losers[k]:+.1%} → "
                              + (f"{after[k]:+.1%}" if k in after else "not bought") for k in fixed]
         entry["kept"] = True
         entry["verdict"] = "Passed every check; Test uses it now"
         new_rules = {**rules, idea.knob: idea.value}
         self._update("test", {"lab_rules": new_rules})
-        self._update("live", {"lab_proposed": {"rules": new_rules, "entry": entry}})
+        # Live is offered just this one change on top of its own rules, never a bundle that
+        # sneaks back a change you turned down before.
+        live_rules = {**self.rules("live"), idea.knob: idea.value}
+        self._update("live", {"lab_proposed": {"rules": live_rules, "entry": entry}})
         self.events("test", f"Strategy lab kept a rule change: {entry['change']}")
         self.events("live", f"The strategy lab found a better rule in Test ({entry['change']}). "
                             "Review it in the app before Live uses it.")

@@ -27,6 +27,7 @@ class CostTests(unittest.TestCase):
         self.assertAlmostEqual(cost_of("claude-haiku-5-5", usage(1_000_000)), 0.10)
         self.assertAlmostEqual(cost_of("claude-haiku-5-5", usage(0, 0, searches=3)), 0.03)
         self.assertEqual(cost_of("x", None), 0.0)
+        self.assertAlmostEqual(cost_of("claude-haiku-5-5-20261001", usage(1_000_000)), 0.10)
 
 
 class FakeMessages:

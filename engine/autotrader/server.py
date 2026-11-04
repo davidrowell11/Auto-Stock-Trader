@@ -65,10 +65,13 @@ class SettingsStore:
     def update(self, mode: Mode, changes: dict) -> None:
         with self._lock:
             self.data.setdefault(mode.value, {}).update(changes)
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = self.path.with_suffix(".tmp")
-            tmp.write_text(json.dumps(self.data, indent=2))
-            tmp.replace(self.path)  # atomic, so a crash can't leave a half-written file
+            self._save()
+
+    def _save(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(self.data, indent=2))
+        tmp.replace(self.path)  # atomic, so a crash can't leave a half-written file
 
     def ai_cap(self, default: float) -> float:
         """The monthly Claude spending cap (one for the whole server; both bots share the API key)."""
@@ -78,10 +81,7 @@ class SettingsStore:
     def set_ai_cap(self, cap: float) -> None:
         with self._lock:
             self.data.setdefault("ai", {})["monthly_cap"] = cap
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = self.path.with_suffix(".tmp")
-            tmp.write_text(json.dumps(self.data, indent=2))
-            tmp.replace(self.path)
+            self._save()
 
     def starter_active(self) -> bool:
         """True until Live has been running for the starter period."""
