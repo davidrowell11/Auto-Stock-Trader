@@ -553,6 +553,8 @@ class Engine:
             return ["not tradable"]
         if asset.is_otc:
             return ["OTC/pink-sheet stocks are never traded"]
+        if asset.is_leveraged_fund:
+            return ["leveraged and inverse funds are never bought (they lose value when held for weeks)"]
         if self.extended and penny.is_penny(sig.price, self.s):
             return ["penny stocks are only bought in regular hours"]
         sold = self.journal.last_protective_sell(self.mode, sig.symbol)

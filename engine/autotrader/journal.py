@@ -101,6 +101,12 @@ class Journal:
                     self.db.execute(f"ALTER TABLE {table} ADD COLUMN {name} {kind}")
         self.db.commit()
 
+    def snapshot(self) -> bytes:
+        """A consistent copy of the whole journal, for backups."""
+        if hasattr(self.db, "serialize"):
+            return self.db.serialize()
+        return "\n".join(self.db.iterdump()).encode()  # pragma: no cover (Python < 3.11)
+
     # ----- trades -----
     def record_trade(self, mode: str, symbol: str, side: str, qty: float, price: float,
                      order_id: str | None, reasons: list[str],

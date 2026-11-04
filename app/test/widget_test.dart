@@ -26,6 +26,19 @@ void main() {
     expect(await api.approvals('live'), isEmpty);
   });
 
+  test('stocks the bot is not managing can be handed over', () async {
+    final api = DemoApi();
+    final before = await api.summary('test');
+    expect(before.otherHoldings, greaterThan(0));
+    expect(
+      before.cash! + before.invested! + before.otherHoldings!,
+      closeTo(before.equity!, 0.01),
+    );
+    expect(await api.adopt('test'), ['KO']);
+    expect((await api.summary('test')).otherHoldings, 0);
+    expect(await api.adopt('test'), isEmpty);
+  });
+
   test('budget changes stick per mode', () async {
     final api = DemoApi();
     await api.updateSettings('test', {'budget': 5000.0});

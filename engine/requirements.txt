@@ -6,3 +6,5 @@ uvicorn==0.54.0
 certifi>=2026.10.23
 httpx2>=2.16.0
 httpcore2>=2.16.0
+# Saves the bot's memory to Replit's database so publishing doesn't wipe it
+psycopg[binary]==3.2.12

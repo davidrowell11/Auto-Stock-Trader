@@ -58,7 +58,7 @@ class EngineFixTests(unittest.TestCase):
                            "AUTOTRADER_PENNY_MIN_SCORE": "0"})
         self.assertEqual(s.penny_price, 5.0)
         self.assertEqual(s.min_price, 1.0)
-        self.assertEqual(s.analyst_min_confidence, 0.60)
+        self.assertEqual(s.analyst_min_confidence, 0.55)  # the floor; Live itself uses 0.60
         self.assertEqual(s.penny_min_score, 0.75)
 
     def test_failed_sell_still_counts_as_held(self):

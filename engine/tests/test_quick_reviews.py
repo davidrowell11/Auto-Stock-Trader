@@ -99,6 +99,31 @@ class AnalystRequestTests(unittest.TestCase):
         self.assertEqual(sent[0]["tools"][0]["type"], "web_search_20250305")
         Analyst(client).review({"symbol": "AAPL"})
         self.assertEqual(sent[1]["fallbacks"], "default")
+        # The full analyst uses the basic search too: the newer one kept failing.
+        self.assertEqual(sent[1]["tools"][0]["type"], "web_search_20250305")
+
+    def test_failed_searches_are_logged(self):
+        from autotrader.analyst import search_problems
+
+        failed = SimpleNamespace(type="web_search_tool_result",
+                                 content=SimpleNamespace(type="web_search_tool_result_error",
+                                                         error_code="unavailable"))
+        worked = SimpleNamespace(type="web_search_tool_result", content=[SimpleNamespace(url="u")])
+        as_dict = SimpleNamespace(type="web_search_tool_result",
+                                  content={"error_code": "max_uses_exceeded"})
+        response = SimpleNamespace(content=[worked, failed, as_dict])
+        self.assertEqual(search_problems(response), ["unavailable", "max_uses_exceeded"])
+        tool = SimpleNamespace(type="tool_use", name="submit_view",
+                               input={"action": "buy", "confidence": 0.6, "reasoning": "r", "red_flags": []})
+
+        class Messages:
+            def create(self, **kw):
+                return SimpleNamespace(stop_reason="tool_use", content=[failed, tool])
+
+        client = SimpleNamespace(beta=SimpleNamespace(messages=Messages()))
+        with self.assertLogs("autotrader.analyst", "WARNING") as logs:
+            Analyst(client).review({"symbol": "AAPL"})
+        self.assertIn("unavailable", logs.output[0])
 
 
 @unittest.skipIf(TestClient is None, "fastapi not installed")

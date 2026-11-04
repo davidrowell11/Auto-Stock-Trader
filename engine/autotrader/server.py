@@ -30,11 +30,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from . import indicators as ind
 from . import penny, strategy
 from .analyst import QUICK_MODEL
 from .broker.base import Broker
 from .config import HARD_LIMITS, Mode, Settings, load_settings
-from .engine import APPROVAL_MAX_AGE, Engine, bot_positions, limit_for
+from .engine import APPROVAL_MAX_AGE, DUST, Engine, bot_positions, limit_for
 from .readiness import live_checks, test_results
 from .journal import Journal, StopState
 from .lab import Lab, clamp_rules
@@ -46,6 +47,8 @@ from .universe import sector_of
 
 log = logging.getLogger("autotrader.server")
 
+TEST_ANALYST_MIN = 0.55
+LIVE_ANALYST_MIN = 0.60
 EDITABLE = ("budget", "approve_mode", "always_watch", "never_buy", "after_hours_buys",
             "quick_reviews")
 
@@ -102,6 +105,11 @@ class SettingsStore:
         overrides.setdefault("after_hours_buys", mode is Mode.TEST)
         # Cheaper AI reviews too: tried in Test first; switch on for Live in the app.
         overrides.setdefault("quick_reviews", mode is Mode.TEST)
+        # How sure the analyst must be: an honest swing-trade edge is about 55%, so Test buys
+        # from 55%. Live keeps the stricter 60% (David's choice, 2026-11-04).
+        if not os.environ.get("AUTOTRADER_ANALYST_MIN_CONFIDENCE"):  # a server setting wins
+            overrides["analyst_min_confidence"] = (TEST_ANALYST_MIN if mode is Mode.TEST
+                                                   else LIVE_ANALYST_MIN)
         if mode is Mode.LIVE:
             # Start small: never more than the starter cap of real money, whatever the file says.
             # Live never falls back to the whole account: without a saved cap it stays at the starter cap.
@@ -420,6 +428,48 @@ class BotRunner:
         self.journal.add_event(self.mode.value, "buy", f"Bought {qty:g} {a['symbol']} at about ${price:.2f} (you approved)")
         return {"bought": qty, "price": price, "stop": round(stop, 2)}
 
+    def adopt(self) -> dict:
+        """Hand the stocks in the account that the bot isn't tracking over to it.
+
+        From then on it watches them with safety stops and sells them by its own rules, as if
+        it had bought them. Used after the bot lost its records (a Replit publish used to wipe
+        them), or when you want it to manage stocks you bought yourself.
+        """
+        if self.broker is None:
+            raise HTTPException(503, self.error or "Broker not connected")
+        if not self.lock.acquire(timeout=10):
+            raise HTTPException(409, "The bot is in the middle of a cycle. Try again in a minute.")
+        try:
+            engine = self.engine()
+            mine, working = engine.sync_holdings()
+            owned = {p.symbol: p.qty for p in mine}
+            extra = [p for p in self.broker.get_positions()
+                     if p.symbol not in working and p.qty - owned.get(p.symbol, 0.0) > DUST]
+            if not extra:
+                return {"adopted": []}
+            try:
+                bars = self.broker.get_daily_bars([p.symbol for p in extra], 30)
+            except Exception as exc:
+                log.warning("Couldn't fetch prices for new safety stops: %s", exc)
+                bars = {}
+            adopted = []
+            for p in extra:
+                state = self.journal.get_stop(self.mode.value, p.symbol)
+                if state is None:
+                    history = bars.get(p.symbol) or []
+                    atr = ind.atr(history, 14) if history else None
+                    stop = (strategy.initial_stop(p.avg_price, atr, strategy.stop_multiple(p.current_price, engine.s))
+                            if atr else p.avg_price * (1 - HARD_LIMITS.max_stop_loss_pct))
+                    state = StopState(p.avg_price, stop, max(p.avg_price, p.current_price))
+                state.qty = p.qty
+                self.journal.save_stop(self.mode.value, p.symbol, state)
+                adopted.append({"symbol": p.symbol, "qty": p.qty, "stop": round(state.stop_price, 2)})
+            names = ", ".join(a["symbol"] for a in adopted)
+            self.journal.add_event(self.mode.value, "adopt", f"Now managing {names}, with safety stops")
+            return {"adopted": adopted}
+        finally:
+            self.lock.release()
+
     def reject(self, approval_id: int) -> None:
         with self.lock:
             a = self.journal.get_approval(approval_id)
@@ -583,11 +633,16 @@ def create_app(runners: dict[Mode, BotRunner], journal: Journal, token: str,
             positions = bot_positions(r.broker, journal, r.mode.value)
             session = r.session()
             market_open = session == "regular"
+            invested = sum(p.market_value for p in positions)
             out.update({
                 "equity": acct.equity, "cash": acct.cash,
                 "today_change": acct.equity - acct.last_equity,
                 "today_change_pct": (acct.equity / acct.last_equity - 1) if acct.last_equity else 0.0,
-                "invested": sum(p.market_value for p in positions),
+                "invested": invested,
+                # Stocks in the account the bot isn't tracking (bought by you, or ones it lost
+                # track of): it never sells or counts them until you hand them over (/adopt).
+                # This is what makes cash + invested add up to the account value.
+                "other_holdings": max(0.0, round(acct.equity - acct.cash - invested, 2)),
                 "positions": len(positions), "market_open": market_open, "session": session,
             })
         return out
@@ -837,6 +892,10 @@ def create_app(runners: dict[Mode, BotRunner], journal: Journal, token: str,
         r.step("Stopped. Press Start bot to begin.", log_it=False)
         return {"running": False}
 
+    @app.post("/api/{mode}/adopt", **secured)
+    def adopt(mode: str):
+        return runner(mode).adopt()
+
     @app.post("/api/{mode}/kill", **secured)
     def kill(mode: str, body: KillRequest):
         return runner(mode).kill(body.sell_all)
@@ -928,6 +987,7 @@ def make_lab(store: SettingsStore, test: BotRunner, journal: Journal) -> Lab:
 def main() -> None:
     import uvicorn
 
+    from .backup import from_environment
     from .broker.alpaca_broker import AlpacaBroker
     from .signals import EarningsCalendar, NewsDesk, QuiverClient, Screener, SecClient, SignalBook
 
@@ -935,8 +995,18 @@ def main() -> None:
     token = os.environ.get("AUTOTRADER_APP_TOKEN", "")
     live_enabled = os.environ.get("AUTOTRADER_LIVE_ENABLED", "").lower() == "true"
     base = load_settings()
-    journal = Journal(base.journal_path)
-    store = SettingsStore(Path(base.journal_path).with_name("app_settings.json"))
+    journal_path = Path(base.journal_path)
+    settings_path = journal_path.with_name("app_settings.json")
+    # Publishing on Replit wipes these files, so they're kept in its database too.
+    backup = from_environment(journal_path, settings_path, lambda: journal.snapshot())
+    if backup is not None:
+        restored = backup.restore()
+        if restored:
+            log.info("Put back from the database: %s", ", ".join(restored))
+    journal = Journal(journal_path)
+    store = SettingsStore(settings_path)
+    if backup is not None:
+        backup.start()
 
     analyst, ask_fn, ask_stream_fn, lessons_fn, spend = None, None, None, None, None
     if os.environ.get("ANTHROPIC_API_KEY"):
@@ -988,7 +1058,11 @@ def main() -> None:
 
     app = create_app(runners, journal, token, ask_fn, live_enabled, skip_results, learner, spend,
                      ask_stream_fn)
-    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", "8000")))
+    try:
+        uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", "8000")))
+    finally:
+        if backup is not None:
+            backup.stop()  # one last copy before the server goes away
 
 
 if __name__ == "__main__":

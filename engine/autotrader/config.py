@@ -38,7 +38,7 @@ class HardLimits:
     penny_price_floor: float = 5.0  # anything under this is always treated as a penny stock
     min_price_floor: float = 1.0  # never buy below this
     penny_min_score: float = 0.75
-    analyst_min_confidence: float = 0.60
+    analyst_min_confidence: float = 0.55  # the lowest any mode may use (Test's level)
     penny_analyst_min_confidence: float = 0.75
     # Going live small (step 4)
     live_starter_cap: float = 1_000.0  # most real money the bot may use at first

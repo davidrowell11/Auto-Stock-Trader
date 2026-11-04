@@ -73,6 +73,7 @@ class DemoApi implements TraderApi {
   Future<Summary> summary(String mode) async {
     final eq = _equity[mode]!;
     final last = eq.last.equity, prev = eq[eq.length - 2].equity;
+    final other = _untracked.contains(mode) ? 0.02 : 0.0;
     return Summary(
       mode: mode,
       running: _running[mode]!,
@@ -87,7 +88,8 @@ class DemoApi implements TraderApi {
       cash: last * 0.32,
       todayChange: last - prev,
       todayChangePct: last / prev - 1,
-      invested: last * 0.68,
+      invested: last * (0.68 - other),
+      otherHoldings: last * other,
       positions: (await positions(mode)).length,
       marketOpen: true,
       session: 'regular',
@@ -403,6 +405,13 @@ class DemoApi implements TraderApi {
   @override
   Future<void> setRunning(String mode, bool running) async =>
       _running[mode] = running;
+
+  // Stocks in the account the bot isn't managing (in demo Test, until handed over).
+  final _untracked = {'test'};
+
+  @override
+  Future<List<String>> adopt(String mode) async =>
+      _untracked.remove(mode) ? ['KO'] : <String>[];
 
   @override
   Future<KillResult> kill(String mode, {required bool sellAll}) async {

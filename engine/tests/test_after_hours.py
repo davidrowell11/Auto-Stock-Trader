@@ -54,6 +54,12 @@ class AfterHoursEngineTests(unittest.TestCase):
         self.assertAlmostEqual(sell.limit_price, round(price * 0.98, 2))
         self.assertTrue(report.sells)
 
+    def test_leveraged_funds_are_never_bought(self):
+        self.broker.assets["AAPL"] = Asset("AAPL", exchange="NASDAQ",
+                                           name="Direxion Daily AAPL Bull 2X Shares")
+        engine(self.broker, self.journal, "regular").run_cycle()
+        self.assertEqual(self.broker.orders, [])
+
     def test_buys_wait_for_regular_hours_when_switched_off(self):
         report = engine(self.broker, self.journal, "pre", after_hours_buys=False).run_cycle()
         self.assertEqual(self.broker.orders, [])
@@ -171,6 +177,39 @@ class AfterHoursServerTests(unittest.TestCase):
         s = self.c.get("/api/test/summary", headers=AUTH).json()
         self.assertEqual(s["session"], "after")
         self.assertFalse(s["market_open"])
+
+    def test_summary_counts_stocks_the_bot_did_not_buy(self):
+        self.brokers[Mode.TEST].holdings["AAPL"] = (10, 100.0)  # bought by hand, not the bot
+        s = self.c.get("/api/test/summary", headers=AUTH).json()
+        self.assertEqual(s["invested"], 0)
+        self.assertGreater(s["other_holdings"], 0)
+        self.assertAlmostEqual(s["cash"] + s["invested"] + s["other_holdings"], s["equity"], places=2)
+
+    def test_handing_untracked_stocks_to_the_bot(self):
+        broker = self.brokers[Mode.TEST]
+        broker.holdings["AAPL"] = (10, broker.price("AAPL"))  # the bot lost its records of this one
+        res = self.c.post("/api/test/adopt", headers=AUTH).json()
+        self.assertEqual([a["symbol"] for a in res["adopted"]], ["AAPL"])
+        stop = self.journal.get_stop("test", "AAPL")
+        self.assertEqual(stop.qty, 10)
+        self.assertLess(stop.stop_price, broker.price("AAPL"))
+        s = self.c.get("/api/test/summary", headers=AUTH).json()
+        self.assertEqual(s["positions"], 1)
+        self.assertEqual(s["other_holdings"], 0)
+        self.assertEqual(self.c.post("/api/test/adopt", headers=AUTH).json(), {"adopted": []})
+
+    def test_handing_over_extra_shares_keeps_the_stop(self):
+        from autotrader.journal import StopState
+
+        self.brokers[Mode.TEST].holdings["AAPL"] = (20, 100.0)
+        self.journal.save_stop("test", "AAPL", StopState(100.0, 90.0, 100.0, qty=10))
+        self.c.post("/api/test/adopt", headers=AUTH)
+        stop = self.journal.get_stop("test", "AAPL")
+        self.assertEqual((stop.qty, stop.stop_price), (20, 90.0))
+
+    def test_test_buys_from_55_live_from_60(self):
+        self.assertEqual(self.store.settings_for(Mode.TEST).analyst_min_confidence, 0.55)
+        self.assertEqual(self.store.settings_for(Mode.LIVE).analyst_min_confidence, 0.60)
 
     def test_closed_market_message(self):
         r = self.runners[Mode.TEST]
