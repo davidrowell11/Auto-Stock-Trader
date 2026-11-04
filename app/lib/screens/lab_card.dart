@@ -70,7 +70,7 @@ class _LabCardState extends State<LabCard> {
               : null,
         ),
         if (error != null) ErrorBox(error!, onRetry: load),
-        if (busy && d == null) const LinearProgressIndicator(),
+        if (busy && d == null) const SkeletonCard(),
         if (d != null && d.proposed != null) _proposal(d),
         if (d != null)
           GlassCard(

@@ -18,17 +18,21 @@ your Mac, Windows PC, Android phone or iPhone controls and watches it.
   Congress buying, and an AI analyst (Claude) that can veto any buy.
 * **Protects what it owns:** trailing safety stops, trend-break sells, daily
   loss and drawdown limits, a kill switch. It only ever touches stocks it
-  bought itself.
+  bought itself. Stocks that move in step with one it holds share that
+  holding's sector limit, and stocks whose prices have stopped updating are
+  skipped.
 * **Trades 4am to 8pm New York time:** limit orders only outside regular
   hours; protective sells always run.
 * **Learns from its own trades:** once a week it scores which idea sources
   have worked, writes lessons for the analyst, and matches each new buy to
-  similar past trades.
+  similar past trades. It also grades the analyst: a month after each review
+  it checks how the stocks it approved and blocked did against the market.
 * **Tests rule changes before trusting them:** a weekly strategy-lab
   experiment that keeps a change only if it wins on prices it was never tuned on.
 * **Keeps AI costs down:** a cheaper Claude model handles clear-cut reviews,
   and a monthly spending cap (default $20) pauses the analyst before credits
-  run out.
+  run out. Each call's worst-case cost is set aside first, so the month never
+  ends over the cap.
 
 Test adapts on its own. Anything that changes how **Live** trades (lessons,
 lab rule changes, cheaper reviews, after-hours buying) waits for you to switch

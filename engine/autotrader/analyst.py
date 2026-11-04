@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 
 log = logging.getLogger("autotrader.analyst")
@@ -178,13 +179,20 @@ uncertainty, and never promise returns."""
 
 def ask(client, question: str, context: dict, model: str = MODEL) -> str:
     """Answer a free-form question from the app's chat box."""
+    text = "".join(ask_stream(client, question, context, model)).strip()
+    return text or "Sorry, I couldn't come up with an answer. Try asking another way."
+
+
+def ask_stream(client, question: str, context: dict, model: str = MODEL) -> Iterator[str]:
+    """The same answer, yielded piece by piece as it's written, so the app can show it growing."""
     messages = [{
         "role": "user",
         "content": f"Bot state:\n{json.dumps(context, default=str)}\n\nQuestion: {question}",
     }]
+    wrote = False
     for _ in range(3):  # a long web search can pause the turn; carry on where it left off
         try:
-            response = client.beta.messages.create(
+            with client.beta.messages.stream(
                 model=model,
                 max_tokens=16000,
                 system=ASK_SYSTEM_PROMPT,
@@ -193,7 +201,14 @@ def ask(client, question: str, context: dict, model: str = MODEL) -> str:
                 output_config={"effort": "medium"},
                 betas=["server-side-fallback-2026-07-01"],
                 fallbacks="default",
-            )
+            ) as stream:
+                for text in stream.text_stream:
+                    if text:
+                        wrote = True
+                        yield text
+                response = stream.get_final_message()
+        except AnalystUnavailable:
+            raise
         except Exception as exc:
             raise AnalystUnavailable(plain_error(exc)) from exc
         if response.stop_reason == "refusal":
@@ -201,5 +216,5 @@ def ask(client, question: str, context: dict, model: str = MODEL) -> str:
         if response.stop_reason != "pause_turn":
             break
         messages = [*messages, {"role": "assistant", "content": response.content}]
-    text = "".join(getattr(b, "text", "") for b in response.content if getattr(b, "type", None) == "text")
-    return text.strip() or "Sorry, I couldn't come up with an answer. Try asking another way."
+    if not wrote:
+        yield "Sorry, I couldn't come up with an answer. Try asking another way."

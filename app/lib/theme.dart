@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 
-/// Brand colors. Gains are green, losses red, one blue accent.
+/// Brand colors. Gains are green, losses red, and a blue-to-violet accent.
 ///
 /// Each color has a dark-theme and a light-theme shade, both picked to pass
 /// WCAG AA contrast (4.5:1) as text on that theme's background.
@@ -13,7 +13,17 @@ class AppColors {
 
   static Color get gain => _pick(0xFF22D3A0, 0xFF047857);
   static Color get loss => _pick(0xFFFF6B6B, 0xFFC62828);
-  static Color get accent => _pick(0xFF4C8DFF, 0xFF2563EB);
+  static Color get accent => _pick(0xFF7C8CFF, 0xFF4F46E5);
+
+  /// The violet end of the accent gradient.
+  static Color get accent2 => _pick(0xFFB794FF, 0xFF7C3AED);
+
+  /// Blue to violet: the main card's edge, the selected tab, section marks.
+  static LinearGradient get accentGradient => LinearGradient(
+    begin: Alignment.topLeft,
+    end: Alignment.bottomRight,
+    colors: [accent, accent2],
+  );
   static Color get warn => _pick(0xFFFFB547, 0xFFA15C00);
   static Color get test =>
       _pick(0xFF9B8CFF, 0xFF5B4BC4); // Test (fake money) badge
@@ -25,9 +35,9 @@ class AppColors {
   /// Text on a gain, loss or accent background.
   static Color get onColor => dark ? const Color(0xFF0B1120) : Colors.white;
 
-  static const darkBg = Color(0xFF070B14);
+  static const darkBg = Color(0xFF060913);
   static const darkSurface = Color(0xFF111827);
-  static const lightBg = Color(0xFFF4F6FB);
+  static const lightBg = Color(0xFFF3F4FB);
   static const lightSurface = Colors.white;
 
   static Color change(num value) => value >= 0 ? gain : loss;
@@ -35,7 +45,7 @@ class AppColors {
 
 ThemeData buildTheme(Brightness brightness) {
   final dark = brightness == Brightness.dark;
-  final accent = Color(dark ? 0xFF4C8DFF : 0xFF2563EB);
+  final accent = Color(dark ? 0xFF7C8CFF : 0xFF4F46E5);
   final scheme = ColorScheme.fromSeed(
     seedColor: accent,
     brightness: brightness,
@@ -48,9 +58,11 @@ ThemeData buildTheme(Brightness brightness) {
     colorScheme: scheme,
     brightness: brightness,
   );
-  final text = GoogleFonts.interTextTheme(base.textTheme).apply(
-    bodyColor: dark ? Colors.white : const Color(0xFF0E1525),
-    displayColor: dark ? Colors.white : const Color(0xFF0E1525),
+  final text = _steadyDigits(
+    GoogleFonts.interTextTheme(base.textTheme).apply(
+      bodyColor: dark ? Colors.white : const Color(0xFF0E1525),
+      displayColor: dark ? Colors.white : const Color(0xFF0E1525),
+    ),
   );
   return base.copyWith(
     scaffoldBackgroundColor: dark ? AppColors.darkBg : AppColors.lightBg,
@@ -62,17 +74,62 @@ ThemeData buildTheme(Brightness brightness) {
       titleTextStyle: text.titleLarge?.copyWith(fontWeight: FontWeight.w700),
     ),
     navigationBarTheme: NavigationBarThemeData(
-      backgroundColor: dark ? const Color(0xFF0B1120) : Colors.white,
-      indicatorColor: accent.withValues(alpha: 0.18),
+      backgroundColor: (dark ? const Color(0xFF0B1120) : Colors.white)
+          .withValues(alpha: 0.82),
+      indicatorColor: accent.withValues(alpha: 0.22),
+      surfaceTintColor: Colors.transparent,
       labelTextStyle: WidgetStatePropertyAll(
         text.labelSmall?.copyWith(fontWeight: FontWeight.w600),
       ),
     ),
     navigationRailTheme: NavigationRailThemeData(
-      backgroundColor: dark ? const Color(0xFF0B1120) : Colors.white,
-      indicatorColor: accent.withValues(alpha: 0.18),
+      backgroundColor: (dark ? const Color(0xFF0B1120) : Colors.white)
+          .withValues(alpha: 0.82),
+      indicatorColor: accent.withValues(alpha: 0.22),
     ),
     sliderTheme: SliderThemeData(activeTrackColor: accent, thumbColor: accent),
+    filledButtonTheme: FilledButtonThemeData(
+      style: FilledButton.styleFrom(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+        textStyle: const TextStyle(fontWeight: FontWeight.w700),
+      ),
+    ),
+    outlinedButtonTheme: OutlinedButtonThemeData(
+      style: OutlinedButton.styleFrom(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+      ),
+    ),
+    chipTheme: ChipThemeData(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(99)),
+      side: BorderSide(color: accent.withValues(alpha: 0.35)),
+      backgroundColor: accent.withValues(alpha: 0.08),
+    ),
     dividerColor: dark ? Colors.white10 : Colors.black12,
+  );
+}
+
+/// Every digit the same width, so prices and totals line up in columns and
+/// don't jiggle as they update.
+TextTheme _steadyDigits(TextTheme t) {
+  const f = [FontFeature.tabularFigures()];
+  TextStyle? s(TextStyle? x) => x?.copyWith(fontFeatures: f);
+  return t.copyWith(
+    displayLarge: s(t.displayLarge),
+    displayMedium: s(t.displayMedium),
+    displaySmall: s(t.displaySmall),
+    headlineLarge: s(t.headlineLarge),
+    headlineMedium: s(t.headlineMedium),
+    headlineSmall: s(t.headlineSmall),
+    titleLarge: s(t.titleLarge),
+    titleMedium: s(t.titleMedium),
+    titleSmall: s(t.titleSmall),
+    bodyLarge: s(t.bodyLarge),
+    bodyMedium: s(t.bodyMedium),
+    bodySmall: s(t.bodySmall),
+    labelLarge: s(t.labelLarge),
+    labelMedium: s(t.labelMedium),
+    labelSmall: s(t.labelSmall),
   );
 }

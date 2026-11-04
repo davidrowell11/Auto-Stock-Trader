@@ -277,6 +277,17 @@ class DemoApi implements TraderApi {
     finishedTrades: mode == 'test' ? 23 : 0,
     needs: 0,
     everyDays: 7,
+    scorecard: Scorecard(
+      approved: ScoreSide(calls: 18, avgReturn: 0.041, avgVsMarket: 0.022),
+      blocked: ScoreSide(calls: 9, avgReturn: -0.012, avgVsMarket: -0.031),
+      waiting: 11,
+      horizonDays: 20,
+      verdict:
+          'Its vetoes are helping: stocks it blocked did 5.3% worse over the next month '
+          'than stocks it approved.',
+      missed: [(symbol: 'SMCI', day: '2026-09-14', vsMarket: 0.084)],
+      letThrough: [(symbol: 'INTC', day: '2026-08-21', vsMarket: -0.071)],
+    ),
   );
 
   @override
@@ -297,8 +308,8 @@ class DemoApi implements TraderApi {
     kept: true,
     verdict: 'Passed every check; Test uses it now',
     evidence: [
-      'AMD bought 2026-03-02: -6.8% → +2.1%',
-      'UBER bought 2026-05-11: -5.9% → not bought',
+      'AMD bought at \$148.20: -6.8% → +2.1%',
+      'UBER bought at \$71.35: -5.9% → not bought',
     ],
     unseenCurrent: {'return': 0.084, 'sharpe': 0.91, 'max_drop': 0.072},
     unseenNew: {'return': 0.112, 'sharpe': 1.08, 'max_drop': 0.069},
@@ -534,8 +545,17 @@ class DemoApi implements TraderApi {
 
   @override
   Future<String> ask(String question, String mode) async {
-    await Future<void>.delayed(Duration(milliseconds: 600 + _rng.nextInt(600)));
+    await Future<void>.delayed(Duration(milliseconds: 500 + _rng.nextInt(400)));
     return "This is demo mode, so I can't look anything up yet. Once your bot server is connected, "
         "I'll answer questions like this using your real positions, trades and today's news.";
+  }
+
+  @override
+  Stream<String> askStream(String question, String mode) async* {
+    final answer = await ask(question, mode);
+    for (final word in answer.split(' ')) {
+      await Future<void>.delayed(Duration(milliseconds: 25 + _rng.nextInt(40)));
+      yield '$word ';
+    }
   }
 }

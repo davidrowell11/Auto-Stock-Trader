@@ -98,6 +98,31 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(self.c.post("/api/ask", headers=AUTH, json={"question": "hi"}).json()["answer"], "echo: hi")
         self.assertEqual(len(self.c.get("/api/bars/AAPL?days=30", headers=AUTH).json()), 30)
 
+    def test_ask_streams_the_answer_line_by_line(self):
+        import json
+
+        from autotrader.analyst import AnalystUnavailable
+        from autotrader.server import create_app
+
+        def lines(app):
+            r = TestClient(app).post("/api/ask/stream", headers=AUTH, json={"question": "hi"})
+            self.assertEqual(r.status_code, 200)
+            return [json.loads(x) for x in r.text.splitlines() if x]
+
+        # Without a streaming analyst, the whole answer comes as one piece.
+        self.assertEqual(lines(self.app), [{"text": "echo: hi"}, {"done": True}])
+
+        def pieces(q, ctx):
+            yield "Hello "
+            yield "there."
+            raise AnalystUnavailable("The analyst reached your monthly spending cap")
+
+        app = create_app(self.runners, self.journal, TOKEN, ask_fn=lambda q, c: "",
+                         ask_stream_fn=pieces, live_enabled=True)
+        self.assertEqual(lines(app), [{"text": "Hello "}, {"text": "there."},
+                                      {"error": "The analyst reached your monthly spending cap"},
+                                      {"done": True}])
+
     def test_weekly_report(self):
         self.runners[Mode.TEST].run_once()
         rep = self.c.get("/api/test/report/weekly", headers=AUTH).json()

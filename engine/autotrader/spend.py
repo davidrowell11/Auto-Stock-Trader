@@ -9,9 +9,14 @@ refuses new calls once the total reaches your cap. The month resets on the
 While capped, the bot treats the analyst as switched off: penny stocks aren't
 bought (they always need its approval) and other buys go ahead on the rules
 alone, exactly as when Claude can't be reached. The idea comes from ruClip's
-budget-gated agents: an agent stops when its budget is spent. Calls already
-running when the cap is reached still finish, so a month can end a few
-cents over.
+budget-gated agents: an agent stops when its budget is spent.
+
+Before each call it also sets aside the most that call could cost (its whole
+output allowance, plus the pages its web searches could add), and only starts
+the call if that still fits under the cap. When the call finishes, the real
+cost replaces the amount set aside. So calls running side by side can't push
+the month past the cap. (The reserve-then-settle idea is from Rune's
+budgeted AI proposals.)
 
 Prices are list prices per million tokens and are an estimate: the Anthropic
 Console's billing page is the real number.
@@ -46,10 +51,25 @@ def price_for(model: str) -> tuple[float, float]:
         return PRICES["claude-haiku-5-5"]
     return FALLBACK_PRICE
 WEB_SEARCH_PER_CALL = 10.0 / 1000
+SEARCH_RESULT_TOKENS = 30_000  # the most a web search is expected to add to the input
+CHARS_PER_TOKEN = 3  # a cautious guess for sizing the request before it's sent
+MAX_PROMPT_TOKENS = 200_000  # the context window: no request can send more than this
 
 
 class SpendingCapReached(RuntimeError):
     pass
+
+
+def most_it_could_cost(kwargs: dict) -> float:
+    """The worst-case dollars for a request, worked out before it's sent."""
+    price_in, price_out = price_for(kwargs.get("model") or "")
+    searches = sum(int(t.get("max_uses", 5)) for t in kwargs.get("tools") or []
+                   if isinstance(t, dict) and str(t.get("type", "")).startswith("web_search"))
+    prompt = len(str(kwargs.get("system", "")) + str(kwargs.get("messages", ""))
+                 + str(kwargs.get("tools", ""))) / CHARS_PER_TOKEN
+    tokens_in = min(prompt, MAX_PROMPT_TOKENS) + searches * SEARCH_RESULT_TOKENS
+    tokens_out = float(kwargs.get("max_tokens") or 0)
+    return tokens_in * price_in / 1e6 + tokens_out * price_out / 1e6 + searches * WEB_SEARCH_PER_CALL
 
 
 def cost_of(model: str, usage) -> float:
@@ -75,6 +95,7 @@ class SpendTracker:
         self.cap = cap
         self.now = now
         self._lock = threading.Lock()
+        self._reserved = 0.0  # set aside for calls still running
 
     def month(self) -> str:
         return self.now().strftime("%Y-%m")
@@ -82,12 +103,30 @@ class SpendTracker:
     def spent(self) -> float:
         return self.journal.ai_spent(self.month())
 
-    def check(self) -> None:
+    def check(self, amount: float = 0.0) -> None:
         cap = self.cap()
-        if cap is not None and self.spent() >= cap:
+        if cap is None:
+            return
+        spent = self.spent()
+        if spent >= cap:
             raise SpendingCapReached(
                 f"The AI analyst reached your ${cap:,.2f} monthly spending cap, so it's paused until "
                 "the 1st. Raise the cap in Settings to turn it back on sooner.")
+        if spent + self._reserved + amount > cap:
+            raise SpendingCapReached(
+                f"The AI analyst is close to your ${cap:,.2f} monthly spending cap "
+                f"(${spent:,.2f} used), and this request could cost up to ${amount:,.2f}, so it "
+                "wasn't sent. Raise the cap in Settings, or it resets on the 1st.")
+
+    def reserve(self, amount: float) -> None:
+        """Set money aside for a call about to start, or raise if it might not fit under the cap."""
+        with self._lock:
+            self.check(amount)
+            self._reserved += amount
+
+    def release(self, amount: float) -> None:
+        with self._lock:
+            self._reserved = max(0.0, self._reserved - amount)
 
     def record(self, model: str, usage, what: str) -> float:
         dollars = cost_of(model, usage)
@@ -105,11 +144,57 @@ class _Messages:
         self.inner, self.tracker, self.what = inner, tracker, what
 
     def create(self, **kwargs):
-        self.tracker.check()
-        response = self.inner.create(**kwargs)
-        model = getattr(response, "model", None) or kwargs.get("model", "")
-        self.tracker.record(model, getattr(response, "usage", None), self.what(kwargs))
+        worst = most_it_could_cost(kwargs)
+        self.tracker.reserve(worst)
+        try:
+            response = self.inner.create(**kwargs)
+            model = getattr(response, "model", None) or kwargs.get("model", "")
+            self.tracker.record(model, getattr(response, "usage", None), self.what(kwargs))
+        finally:
+            self.tracker.release(worst)
         return response
+
+
+    def stream(self, **kwargs):
+        """Like the SDK's messages.stream(), counted when the stream finishes."""
+        worst = most_it_could_cost(kwargs)
+        self.tracker.reserve(worst)
+        try:
+            inner = self.inner.stream(**kwargs)
+        except BaseException:
+            self.tracker.release(worst)
+            raise
+        return _MeteredStream(inner, self, kwargs, worst)
+
+
+class _MeteredStream:
+    def __init__(self, inner, messages: _Messages, kwargs: dict, worst: float) -> None:
+        self.inner, self.messages, self.kwargs, self.worst = inner, messages, kwargs, worst
+        self.stream = None
+
+    def __enter__(self):
+        try:
+            self.stream = self.inner.__enter__()
+        except BaseException:
+            self.messages.tracker.release(self.worst)
+            raise
+        return self.stream
+
+    def __exit__(self, *exc):
+        try:
+            final = None
+            try:
+                final = (self.stream.get_final_message() if exc[0] is None
+                         else getattr(self.stream, "current_message_snapshot", None))
+            except Exception:  # a stream that broke part way: count what it reported, if anything
+                final = getattr(self.stream, "current_message_snapshot", None)
+            if final is not None:
+                model = getattr(final, "model", None) or self.kwargs.get("model", "")
+                self.messages.tracker.record(model, getattr(final, "usage", None),
+                                             self.messages.what(self.kwargs))
+        finally:
+            self.messages.tracker.release(self.worst)
+        return self.inner.__exit__(*exc)
 
 
 class MeteredClient:

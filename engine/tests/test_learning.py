@@ -74,7 +74,7 @@ class LearnerTests(unittest.TestCase):
         self.now = [datetime(2026, 11, 4, tzinfo=timezone.utc)]
         self.seen = []
 
-        def lessons(trades, stats, previous):
+        def lessons(trades, stats, previous, card=None):
             self.seen.append((trades, stats, previous))
             return ["Screener gainers bought after a big jump tended to fall back."]
 

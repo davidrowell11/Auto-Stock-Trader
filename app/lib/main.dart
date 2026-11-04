@@ -71,40 +71,60 @@ class _HomeShellState extends State<HomeShell> {
   @override
   Widget build(BuildContext context) {
     final wide = MediaQuery.sizeOf(context).width >= 900;
-    final body = SafeArea(child: _page(index));
+    final body = SafeArea(
+      child: AnimatedSwitcher(
+        duration: const Duration(milliseconds: 260),
+        switchInCurve: Curves.easeOutCubic,
+        switchOutCurve: Curves.easeInCubic,
+        transitionBuilder: (child, anim) => FadeTransition(
+          opacity: anim,
+          child: SlideTransition(
+            position: Tween(
+              begin: const Offset(0, 0.015),
+              end: Offset.zero,
+            ).animate(anim),
+            child: child,
+          ),
+        ),
+        child: KeyedSubtree(key: ValueKey(index), child: _page(index)),
+      ),
+    );
     if (wide) {
       return Scaffold(
-        body: Row(
-          children: [
-            NavigationRail(
-              selectedIndex: index,
-              onDestinationSelected: (i) => setState(() => index = i),
-              labelType: NavigationRailLabelType.all,
-              leading: Padding(
-                padding: EdgeInsets.symmetric(vertical: 18),
-                child: Icon(
-                  Icons.show_chart_rounded,
-                  color: AppColors.accent,
-                  size: 30,
-                ),
-              ),
-              destinations: [
-                for (final d in _destinations)
-                  NavigationRailDestination(
-                    icon: Icon(d.$1),
-                    selectedIcon: Icon(d.$2),
-                    label: Text(d.$3),
+        backgroundColor: Colors.transparent,
+        body: AuroraBackground(
+          child: Row(
+            children: [
+              NavigationRail(
+                selectedIndex: index,
+                onDestinationSelected: (i) => setState(() => index = i),
+                labelType: NavigationRailLabelType.all,
+                leading: Padding(
+                  padding: EdgeInsets.symmetric(vertical: 18),
+                  child: Icon(
+                    Icons.show_chart_rounded,
+                    color: AppColors.accent,
+                    size: 30,
                   ),
-              ],
-            ),
-            const VerticalDivider(width: 1),
-            Expanded(child: body),
-          ],
+                ),
+                destinations: [
+                  for (final d in _destinations)
+                    NavigationRailDestination(
+                      icon: Icon(d.$1),
+                      selectedIcon: Icon(d.$2),
+                      label: Text(d.$3),
+                    ),
+                ],
+              ),
+              const VerticalDivider(width: 1),
+              Expanded(child: body),
+            ],
+          ),
         ),
       );
     }
     return Scaffold(
-      body: body,
+      body: AuroraBackground(child: body),
       bottomNavigationBar: NavigationBar(
         selectedIndex: index,
         onDestinationSelected: (i) => setState(() => index = i),

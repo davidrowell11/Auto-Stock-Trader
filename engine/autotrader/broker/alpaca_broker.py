@@ -11,6 +11,8 @@ Test key can never place a real-money trade:
 from __future__ import annotations
 
 import os
+import time as clock
+import uuid
 from collections.abc import Iterable
 from datetime import datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -21,6 +23,8 @@ from .base import Broker
 
 
 NEW_YORK = ZoneInfo("America/New_York")
+LOOKUP_WAITS = (0.0, 1.0, 2.0)  # seconds before each look for an order whose reply was lost
+DEAD_ORDER_STATUSES = {"rejected", "canceled", "cancelled", "expired"}
 EXTENDED_START = time(4, 0)  # pre-market opens
 EXTENDED_END = time(20, 0)  # after-hours trading ends
 
@@ -103,23 +107,43 @@ class AlpacaBroker(Broker):
                      fractionable=bool(getattr(a, "fractionable", False)))
 
     def submit_order(self, order: OrderRequest) -> str:
+        """Place an order. Each one carries its own ID, so an order whose reply got lost on the
+        way back (a timeout, a dropped connection) is found again instead of being sent twice
+        or left without a safety stop."""
         from alpaca.trading.enums import OrderSide, TimeInForce
         from alpaca.trading.requests import LimitOrderRequest, MarketOrderRequest
 
         side = OrderSide.BUY if order.side is Side.BUY else OrderSide.SELL
         if order.extended_hours and order.limit_price is None:
             raise ValueError("Orders outside regular hours need a limit price")
+        client_id = f"autotrader-{uuid.uuid4().hex}"
         if order.limit_price is not None:
             req = LimitOrderRequest(
                 symbol=order.symbol, qty=order.qty, side=side,
                 time_in_force=TimeInForce.DAY, limit_price=order.limit_price,
-                extended_hours=order.extended_hours,
+                extended_hours=order.extended_hours, client_order_id=client_id,
             )
         else:
             req = MarketOrderRequest(
-                symbol=order.symbol, qty=order.qty, side=side, time_in_force=TimeInForce.DAY
+                symbol=order.symbol, qty=order.qty, side=side, time_in_force=TimeInForce.DAY,
+                client_order_id=client_id,
             )
-        return str(self.trading.submit_order(req).id)
+        try:
+            return str(self.trading.submit_order(req).id)
+        except Exception:
+            # Did Alpaca take it anyway? Look a few times, since a new order can take a moment
+            # to show up. A rejected or cancelled one counts as failed.
+            for wait in LOOKUP_WAITS:
+                clock.sleep(wait)
+                try:
+                    found = self.trading.get_order_by_client_id(client_id)
+                except Exception:
+                    continue
+                status = str(getattr(found, "status", "")).lower().rsplit(".", 1)[-1]
+                if status in DEAD_ORDER_STATUSES:
+                    break
+                return str(found.id)
+            raise
 
     def open_order_symbols(self) -> set[str]:
         from alpaca.trading.enums import QueryOrderStatus

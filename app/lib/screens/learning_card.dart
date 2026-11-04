@@ -68,7 +68,7 @@ class _LearningCardState extends State<LearningCard> {
               : null,
         ),
         if (error != null) ErrorBox(error!, onRetry: load),
-        if (busy && d == null) const LinearProgressIndicator(),
+        if (busy && d == null) const SkeletonCard(),
         if (d != null && d.proposed != null) _proposal(d.proposed!),
         if (d != null && d.active != null)
           GlassCard(child: _memory(d.active!, live ? 'Live uses' : 'Test uses'))

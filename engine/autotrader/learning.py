@@ -37,6 +37,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 
+from . import scorecard
 from .journal import Journal
 
 log = logging.getLogger("autotrader.learning")
@@ -202,8 +203,11 @@ def weights_from(stats: dict[str, dict]) -> dict[str, float]:
     return out
 
 
-# Asks Claude for lessons: (finished trades, stats per source, previous lessons) -> lessons.
-LessonsFn = Callable[[list[dict], dict, list[str]], list[str]]
+# Asks Claude for lessons: (finished trades, stats per source, previous lessons, analyst
+# scorecard or None) -> lessons.
+LessonsFn = Callable[[list[dict], dict, list[str], dict | None], list[str]]
+# Daily prices for the scorecard: (symbols, trading days) -> bars by symbol.
+PricesFn = Callable[[list[str], int], dict]
 
 
 class LearnerBusy(RuntimeError):
@@ -220,9 +224,11 @@ def _same(a: dict | None, b: dict) -> bool:
 
 class Learner:
     def __init__(self, journal: Journal, lessons_fn: LessonsFn | None = None,
-                 now: Callable[[], datetime] = lambda: datetime.now(timezone.utc)) -> None:
+                 now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+                 prices_fn: PricesFn | None = None) -> None:
         self.journal = journal
         self.lessons_fn = lessons_fn
+        self.prices_fn = prices_fn  # for grading the analyst's calls; None skips the scorecard
         self.now = now
         self._last_try: datetime | None = None
         self._lock = threading.Lock()  # the weekly review and "Learn now" never run at once
@@ -255,8 +261,27 @@ class Learner:
         finally:
             self._lock.release()
 
+    def grade_analyst(self) -> dict | None:
+        """Grade the analyst's month-old calls (Test and Live together) and keep the result."""
+        if self.prices_fn is None:
+            return None
+        today = self.now().date()
+        try:
+            views = self.journal.views("test") + self.journal.views("live")
+            if not scorecard.any_ready(views, today):
+                return None  # nothing is a month old yet: no need to fetch prices
+            bars = self.prices_fn(scorecard.symbols_of(views, today),
+                                  scorecard.bars_needed(views, today))
+            card = scorecard.grade(views, bars, today)
+        except Exception as exc:  # the scorecard can wait; it must never stop the weekly review
+            log.warning("Couldn't grade the analyst's calls: %s", exc)
+            return None
+        self.journal.save_memory("test", "scorecard", card)
+        return card
+
     def _learn(self) -> dict | None:
         self._last_try = self.now()
+        card = self.grade_analyst()
         # Both bots' finished trades teach it; Live's real-money results are just as useful.
         results = outcomes(self.journal, "test") + outcomes(self.journal, "live")
         if len(results) < MIN_TRADES_FOR_LESSONS:
@@ -270,7 +295,7 @@ class Learner:
         if self.lessons_fn is not None:
             shown = [o.as_dict() for o in results[-MAX_OUTCOMES_SHOWN:]]
             try:
-                lessons = [str(x).strip() for x in self.lessons_fn(shown, stats, previous)
+                lessons = [str(x).strip() for x in self.lessons_fn(shown, stats, previous, card)
                            if str(x).strip()][:MAX_LESSONS]
             except Exception as exc:  # keep the weights and old lessons; retry in a few hours
                 log.warning("Couldn't get lessons from the analyst: %s", exc)
@@ -340,7 +365,13 @@ def report(journal: Journal, mode: str) -> dict:
         "finished_trades": finished.get(mode, 0),
         "needs": max(0, MIN_TRADES_FOR_LESSONS - sum(finished.values())),
         "every_days": LEARN_EVERY.days,
+        "scorecard": _scorecard(journal),
     }
+
+
+def _scorecard(journal: Journal) -> dict | None:
+    card = journal.memory("test", "scorecard")  # one scorecard: the analyst is the same in both
+    return {k: v for k, v in card.items() if k != "id"} if card else None
 
 
 LESSONS_SYSTEM_PROMPT = """You review the finished trades of a personal swing-trading bot and \
@@ -352,7 +383,11 @@ for an analyst to act on when reviewing a new buy (for example which kinds of se
 have tended to lose, or which sell reasons keep coming up). Base every lesson on the trades \
 given; with only a few trades, say less rather than overfit. Keep earlier lessons that the new \
 results still support, and drop ones they contradict. Never suggest loosening risk limits. \
-Call submit_lessons once with the final list."""
+When an analyst_scorecard is given, it shows how the stocks the analyst approved and blocked \
+did over the month after each review, compared with the market. If blocked stocks keep doing \
+better than approved ones, write a lesson about what kind of setup it has been too strict on; \
+if approved ones keep lagging, say what it let through. Call submit_lessons once with the final \
+list."""
 
 LESSONS_TOOL = {
     "name": "submit_lessons",
@@ -371,9 +406,13 @@ def claude_lessons(client, model: str | None = None) -> LessonsFn:
     """Lessons from Claude, using the analyst's API key."""
     from .analyst import MODEL, AnalystUnavailable, plain_error
 
-    def lessons(trades: list[dict], stats: dict, previous: list[str]) -> list[str]:
-        body = json.dumps({"finished_trades": trades, "results_by_source": stats,
-                           "earlier_lessons": previous}, indent=2)
+    def lessons(trades: list[dict], stats: dict, previous: list[str],
+                card: dict | None = None) -> list[str]:
+        payload = {"finished_trades": trades, "results_by_source": stats,
+                   "earlier_lessons": previous}
+        if card and (card["approved"]["calls"] or card["blocked"]["calls"]):
+            payload["analyst_scorecard"] = card
+        body = json.dumps(payload, indent=2)
         try:
             response = client.messages.create(
                 model=model or MODEL, max_tokens=4000, system=LESSONS_SYSTEM_PROMPT,

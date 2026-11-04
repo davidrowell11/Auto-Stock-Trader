@@ -59,125 +59,130 @@ class _StockDetailState extends State<StockDetail> {
     final h = widget.holding;
     final t = Theme.of(context).textTheme;
     return Scaffold(
+      extendBodyBehindAppBar: true,
       appBar: AppBar(title: Text(h.symbol)),
-      body: PageFrame(
-        onRefresh: load,
-        children: [
-          GlassCard(
-            glow: AppColors.change(h.gain),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
+      body: AuroraBackground(
+        child: SafeArea(
+          child: PageFrame(
+            onRefresh: load,
+            children: [
+              GlassCard(
+                glow: AppColors.change(h.gain),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      money.format(h.price),
-                      style: t.headlineMedium?.copyWith(
-                        fontWeight: FontWeight.w800,
-                      ),
-                    ),
-                    const Spacer(),
-                    ModeBadge(widget.mode, demo: AppScope.of(context).demo),
-                  ],
-                ),
-                const SizedBox(height: 4),
-                ChangeText(amount: h.gain, percent: h.gainPct),
-                const SizedBox(height: 4),
-                Text(
-                  'since the bot bought at ${money.format(h.avgPrice)}',
-                  style: t.bodySmall?.copyWith(color: AppColors.muted),
-                ),
-                const SizedBox(height: 16),
-                SegmentedButton<int>(
-                  segments: const [
-                    ButtonSegment(value: 30, label: Text('1M')),
-                    ButtonSegment(value: 90, label: Text('3M')),
-                    ButtonSegment(value: 180, label: Text('6M')),
-                    ButtonSegment(value: 365, label: Text('1Y')),
-                  ],
-                  selected: {days},
-                  onSelectionChanged: (s) {
-                    setState(() => days = s.first);
-                    load();
-                  },
-                ),
-                const SizedBox(height: 14),
-                if (error != null)
-                  Text(error!, style: TextStyle(color: AppColors.loss)),
-                if (bars.length > 1)
-                  Semantics(
-                    label:
-                        '${widget.holding.symbol} price chart, last $days days: '
-                        '\$${bars.first.c.toStringAsFixed(2)} to '
-                        '\$${bars.last.c.toStringAsFixed(2)}',
-                    excludeSemantics: true,
-                    child: SizedBox(height: 260, child: _candles()),
-                  ),
-                if (bars.length <= 1 && error == null)
-                  const SizedBox(
-                    height: 260,
-                    child: Center(child: CircularProgressIndicator()),
-                  ),
-                const SizedBox(height: 10),
-                Wrap(
-                  spacing: 14,
-                  runSpacing: 6,
-                  children: [
-                    _key(AppColors.gain, 'Bot bought'),
-                    _key(AppColors.loss, 'Bot sold'),
-                    if (h.stop != null)
-                      _key(AppColors.warn, 'Stop ${money.format(h.stop)}'),
-                  ],
-                ),
-              ],
-            ),
-          ),
-          const SectionTitle('Position'),
-          GlassCard(
-            child: Column(
-              children: [
-                _row('Shares', shares(h.qty)),
-                _row('Value', money.format(h.value)),
-                _row('Average cost', money.format(h.avgPrice)),
-                _row(
-                  'Stop-loss (moves up as price rises)',
-                  h.stop == null ? '—' : money.format(h.stop),
-                ),
-                _row('Sector', h.sector),
-              ],
-            ),
-          ),
-          const SectionTitle('Why the bot bought it'),
-          GlassCard(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                if (h.whyBought.isEmpty)
-                  const Text('No notes saved for this trade.'),
-                for (final r in h.whyBought)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 10),
-                    child: Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
+                    Row(
                       children: [
-                        Icon(
-                          r.startsWith('Analyst')
-                              ? Icons.auto_awesome_rounded
-                              : Icons.check_circle_outline_rounded,
-                          size: 18,
-                          color: r.startsWith('Analyst')
-                              ? AppColors.accent
-                              : AppColors.gain,
+                        Text(
+                          money.format(h.price),
+                          style: t.headlineMedium?.copyWith(
+                            fontWeight: FontWeight.w800,
+                          ),
                         ),
-                        const SizedBox(width: 10),
-                        Expanded(child: Text(r)),
+                        const Spacer(),
+                        ModeBadge(widget.mode, demo: AppScope.of(context).demo),
                       ],
                     ),
-                  ),
-              ],
-            ),
+                    const SizedBox(height: 4),
+                    ChangeText(amount: h.gain, percent: h.gainPct),
+                    const SizedBox(height: 4),
+                    Text(
+                      'since the bot bought at ${money.format(h.avgPrice)}',
+                      style: t.bodySmall?.copyWith(color: AppColors.muted),
+                    ),
+                    const SizedBox(height: 16),
+                    SegmentedButton<int>(
+                      segments: const [
+                        ButtonSegment(value: 30, label: Text('1M')),
+                        ButtonSegment(value: 90, label: Text('3M')),
+                        ButtonSegment(value: 180, label: Text('6M')),
+                        ButtonSegment(value: 365, label: Text('1Y')),
+                      ],
+                      selected: {days},
+                      onSelectionChanged: (s) {
+                        setState(() => days = s.first);
+                        load();
+                      },
+                    ),
+                    const SizedBox(height: 14),
+                    if (error != null)
+                      Text(error!, style: TextStyle(color: AppColors.loss)),
+                    if (bars.length > 1)
+                      Semantics(
+                        label:
+                            '${widget.holding.symbol} price chart, last $days days: '
+                            '\$${bars.first.c.toStringAsFixed(2)} to '
+                            '\$${bars.last.c.toStringAsFixed(2)}',
+                        excludeSemantics: true,
+                        child: SizedBox(height: 260, child: _candles()),
+                      ),
+                    if (bars.length <= 1 && error == null)
+                      const SizedBox(
+                        height: 260,
+                        child: Center(child: CircularProgressIndicator()),
+                      ),
+                    const SizedBox(height: 10),
+                    Wrap(
+                      spacing: 14,
+                      runSpacing: 6,
+                      children: [
+                        _key(AppColors.gain, 'Bot bought'),
+                        _key(AppColors.loss, 'Bot sold'),
+                        if (h.stop != null)
+                          _key(AppColors.warn, 'Stop ${money.format(h.stop)}'),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+              const SectionTitle('Position'),
+              GlassCard(
+                child: Column(
+                  children: [
+                    _row('Shares', shares(h.qty)),
+                    _row('Value', money.format(h.value)),
+                    _row('Average cost', money.format(h.avgPrice)),
+                    _row(
+                      'Stop-loss (moves up as price rises)',
+                      h.stop == null ? '—' : money.format(h.stop),
+                    ),
+                    _row('Sector', h.sector),
+                  ],
+                ),
+              ),
+              const SectionTitle('Why the bot bought it'),
+              GlassCard(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    if (h.whyBought.isEmpty)
+                      const Text('No notes saved for this trade.'),
+                    for (final r in h.whyBought)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 10),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Icon(
+                              r.startsWith('Analyst')
+                                  ? Icons.auto_awesome_rounded
+                                  : Icons.check_circle_outline_rounded,
+                              size: 18,
+                              color: r.startsWith('Analyst')
+                                  ? AppColors.accent
+                                  : AppColors.gain,
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(child: Text(r)),
+                          ],
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ],
           ),
-        ],
+        ),
       ),
     );
   }

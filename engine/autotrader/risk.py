@@ -10,10 +10,50 @@ from .config import Settings
 from .models import Account, Position
 
 
+CORRELATION_DAYS = 63  # about three months of daily moves
+CORRELATION_LIMIT = 0.8  # moves this closely with a holding: counted as the same bet
+
+
+def correlation(a: Sequence[float], b: Sequence[float]) -> float | None:
+    """Pearson correlation of two equal-length series, or None if either never moves."""
+    n = len(a)
+    if n < 2 or n != len(b):
+        return None
+    ma, mb = sum(a) / n, sum(b) / n
+    cov = sum((x - ma) * (y - mb) for x, y in zip(a, b))
+    va = sum((x - ma) ** 2 for x in a)
+    vb = sum((y - mb) ** 2 for y in b)
+    if va <= 1e-12 or vb <= 1e-12:
+        return None
+    return cov / math.sqrt(va * vb)
+
+
+def daily_moves(bars) -> dict:
+    """Day -> that day's % change, for the last CORRELATION_DAYS days."""
+    tail = list(bars)[-(CORRELATION_DAYS + 1):]
+    return {b.time: b.close / a.close - 1 for a, b in zip(tail, tail[1:]) if a.close > 0}
+
+
+def closest_holding(symbol: str, bars: dict, positions: Sequence[Position]):
+    """The holding this stock moves most closely with, if at or over the limit: (position, corr)."""
+    mine = daily_moves(bars.get(symbol, []))
+    best = None
+    for p in positions:
+        theirs = daily_moves(bars.get(p.symbol, []))
+        days = sorted(mine.keys() & theirs.keys())
+        if len(days) < CORRELATION_DAYS // 2:
+            continue
+        c = correlation([mine[d] for d in days], [theirs[d] for d in days])
+        if c is not None and c >= CORRELATION_LIMIT and (best is None or c > best[1]):
+            best = (p, c)
+    return best
+
+
 @dataclass(frozen=True)
 class SizeDecision:
     qty: float  # whole shares, or fractions when the stock allows it
     note: str
+    twin: str | None = None  # "Moves closely with AAPL (0.91 correlation)..." when that applied
 
 
 class RiskManager:
@@ -73,7 +113,7 @@ class RiskManager:
     MIN_FRACTIONAL_DOLLARS = 1.0  # Alpaca's smallest fractional order
 
     def size_buy(self, symbol: str, price: float, sector: str, penny: bool,
-                 fractional: bool = False) -> SizeDecision:
+                 fractional: bool = False, bars: dict | None = None) -> SizeDecision:
         """How much to buy. Fractional shares let a small budget hold pricey stocks."""
         if price <= 0:
             return SizeDecision(0, "No valid price")
@@ -94,6 +134,16 @@ class RiskManager:
             "sector limit": cap * self.s.max_sector_pct
             - sum(p.market_value for p in self.positions if p.sector == sector),
         }
+        twin_note = None
+        match = closest_holding(symbol, bars, self.positions) if bars else None
+        if match is not None and match[0].sector != sector:
+            # It moves with something already held, so it's the same bet: it also has to fit
+            # under that holding's sector limit (on top of its own).
+            twin, corr = match
+            limits[f"limit it shares with {twin.symbol}"] = cap * self.s.max_sector_pct - sum(
+                p.market_value for p in self.positions if p.sector == twin.sector)
+            twin_note = (f"Moves closely with {twin.symbol} ({corr:.2f} correlation), so it also "
+                         f"counts toward {twin.symbol}'s {twin.sector} limit")
         if penny:
             penny_value = sum(
                 p.market_value for p in self.positions if p.current_price < self.s.penny_price
@@ -109,8 +159,8 @@ class RiskManager:
         else:
             qty = math.floor(dollars / price) if dollars > 0 else 0
         if qty <= 0:
-            return SizeDecision(0, f"No room under the {binding}")
-        return SizeDecision(qty, f"{qty:g} shares, limited by {binding}")
+            return SizeDecision(0, f"No room under the {binding}", twin_note)
+        return SizeDecision(qty, f"{qty:g} shares, limited by {binding}", twin_note)
 
     def register_buy(self, symbol: str, qty: float, price: float, sector: str) -> None:
         """Count a just-placed buy so the next sizing in the same cycle sees it."""

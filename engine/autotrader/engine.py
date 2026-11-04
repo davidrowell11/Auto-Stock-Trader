@@ -37,6 +37,7 @@ QUICK_MARGIN = 0.15
 
 EXTENDED_SESSIONS = {"pre", "after"}  # 4am-9:30am and 4pm-8pm New York time
 EXTENDED_BUY_CUSHION = 0.005  # outside regular hours, pay at most 0.5% over the last trade
+STALE_AFTER = timedelta(days=3)  # behind the market's latest day by more than a weekend
 EXTENDED_SELL_CUSHION = 0.02  # ...and accept down to 2% under it to get out
 
 
@@ -339,11 +340,19 @@ class Engine:
         held = {p.symbol for p in risk.positions} | self.journal.owned_symbols(self.mode)
         self.progress(f"Looking for buys among {len(universe)} stocks")
         candidates: list[Signal] = []
+        market = bars.get(MARKET)
+        latest_day = market[-1].time if market else None
         for symbol in universe:
             if symbol in held or symbol in self.open_orders or self.journal.has_pending(self.mode, symbol):
                 continue
             history = bars.get(symbol)
             if not history:
+                continue
+            if latest_day is not None and latest_day - history[-1].time > STALE_AFTER:
+                # No new prices while the market traded: halted, delisted or a data gap.
+                last = history[-1].time
+                report.skipped.append(f"{symbol}: its price data is out of date (last price "
+                                      f"{last:%b} {last.day})")
                 continue
             sig = strategy.score_trend(symbol, history)
             if sig is None:
@@ -406,11 +415,14 @@ class Engine:
             # Whole shares outside regular hours, where fractional orders aren't always accepted.
             fractional = (bool(getattr(asset, "fractionable", False)) and not is_penny
                           and not self.extended)
-            size = risk.size_buy(sig.symbol, sig.price, sector, is_penny, fractional)
+            size = risk.size_buy(sig.symbol, sig.price, sector, is_penny, fractional, bars)
+            twin_note = size.twin
             if size.qty <= 0:
-                report.skipped.append(f"{sig.symbol}: {size.note}")
+                report.skipped.append(f"{sig.symbol}: {size.note}"
+                                      + (f" ({twin_note[0].lower()}{twin_note[1:]})" if twin_note else ""))
                 continue
-            reasons = [f"Score {sig.score:.2f}", *sig.reasons, size.note]
+            reasons = [f"Score {sig.score:.2f}", *sig.reasons, size.note,
+                       *([twin_note] if twin_note else [])]
             sources = [*sig.sources, *(["penny"] if is_penny else []),
                        *(["after_hours"] if self.extended else [])]
             similar_note, similar = self.memory.similar_note(sources, sig.score)
