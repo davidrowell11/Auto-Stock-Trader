@@ -23,7 +23,8 @@ String ago(DateTime t) {
 
 bool isDark(BuildContext c) => Theme.of(c).brightness == Brightness.dark;
 
-/// The frosted "glass" card used everywhere.
+/// The frosted "glass" card used everywhere. A [glow] card (the main account
+/// card, anything waiting for you) gets a lit gradient edge in that color.
 class GlassCard extends StatelessWidget {
   const GlassCard({
     super.key,
@@ -38,50 +39,168 @@ class GlassCard extends StatelessWidget {
   final VoidCallback? onTap;
   final Color? glow;
 
+  static const radius = 20.0;
+
   @override
   Widget build(BuildContext context) {
     final dark = isDark(context);
-    return Container(
+    final fill = LinearGradient(
+      begin: Alignment.topLeft,
+      end: Alignment.bottomRight,
+      colors: dark
+          ? [
+              Color.lerp(
+                const Color(0xFF151B2E),
+                glow,
+                glow == null ? 0 : 0.18,
+              )!,
+              const Color(0xFF0D1220),
+            ]
+          : [
+              Colors.white,
+              Color.lerp(Colors.white, glow, glow == null ? 0 : 0.04)!,
+            ],
+    );
+    final card = Container(
       decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(20),
-        gradient: LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: dark
-              ? [
-                  Colors.white.withValues(alpha: 0.07),
-                  Colors.white.withValues(alpha: 0.025),
-                ]
-              : [Colors.white, Colors.white.withValues(alpha: 0.92)],
-        ),
-        border: Border.all(
-          color: (glow ?? (dark ? Colors.white : Colors.black)).withValues(
-            alpha: glow != null ? 0.45 : (dark ? 0.08 : 0.06),
-          ),
-        ),
-        boxShadow: [
-          if (glow != null)
-            BoxShadow(
-              color: glow!.withValues(alpha: 0.18),
-              blurRadius: 24,
-              spreadRadius: -4,
-            ),
-          if (!dark)
-            BoxShadow(
-              color: Colors.black.withValues(alpha: 0.05),
-              blurRadius: 18,
-              offset: const Offset(0, 6),
-            ),
-        ],
+        borderRadius: BorderRadius.circular(radius - (glow != null ? 1.2 : 0)),
+        gradient: fill,
+        border: glow != null
+            ? null
+            : Border.all(
+                color: (dark ? Colors.white : Colors.black).withValues(
+                  alpha: dark ? 0.07 : 0.06,
+                ),
+              ),
       ),
+      // A faint highlight along the top edge, like light on glass.
+      foregroundDecoration: dark
+          ? BoxDecoration(
+              borderRadius: BorderRadius.circular(radius),
+              gradient: LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.center,
+                colors: [
+                  Colors.white.withValues(alpha: 0.05),
+                  Colors.white.withValues(alpha: 0),
+                ],
+              ),
+            )
+          : null,
       child: Material(
         type: MaterialType.transparency,
         child: InkWell(
-          borderRadius: BorderRadius.circular(20),
+          borderRadius: BorderRadius.circular(radius),
           onTap: onTap,
           child: Padding(padding: padding, child: child),
         ),
       ),
+    );
+    return Container(
+      padding: glow != null ? const EdgeInsets.all(1.2) : EdgeInsets.zero,
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(radius),
+        gradient: glow == null
+            ? null
+            : LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [
+                  glow!.withValues(alpha: 0.85),
+                  (glow == AppColors.accent ? AppColors.accent2 : glow!)
+                      .withValues(alpha: 0.25),
+                  glow!.withValues(alpha: 0.10),
+                ],
+              ),
+        boxShadow: [
+          if (glow != null)
+            BoxShadow(
+              color: glow!.withValues(alpha: dark ? 0.22 : 0.16),
+              blurRadius: 28,
+              spreadRadius: -6,
+              offset: const Offset(0, 8),
+            ),
+          if (!dark)
+            BoxShadow(
+              color: const Color(0xFF1E1B4B).withValues(alpha: 0.06),
+              blurRadius: 20,
+              offset: const Offset(0, 8),
+            ),
+        ],
+      ),
+      child: card,
+    );
+  }
+}
+
+/// The soft colored glow behind every screen: blue top left, violet top right,
+/// a hint of green low down. Purely decoration.
+class AuroraBackground extends StatelessWidget {
+  const AuroraBackground({super.key, required this.child});
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    final dark = isDark(context);
+    Widget blob(Alignment at, Color c, double alpha, double size) => Align(
+      alignment: at,
+      child: IgnorePointer(
+        child: Container(
+          width: size,
+          height: size,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            gradient: RadialGradient(
+              colors: [
+                c.withValues(alpha: alpha),
+                c.withValues(alpha: 0),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+    final k = dark ? 1.0 : 0.55;
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        ColoredBox(color: dark ? AppColors.darkBg : AppColors.lightBg),
+        Positioned.fill(
+          child: ClipRect(
+            child: OverflowBox(
+              maxWidth: double.infinity,
+              maxHeight: double.infinity,
+              child: SizedBox(
+                width: MediaQuery.sizeOf(context).width + 400,
+                height: MediaQuery.sizeOf(context).height + 400,
+                child: Stack(
+                  children: [
+                    blob(
+                      const Alignment(-1, -1),
+                      AppColors.accent,
+                      0.34 * k,
+                      700,
+                    ),
+                    blob(
+                      const Alignment(1, -0.85),
+                      AppColors.accent2,
+                      0.28 * k,
+                      620,
+                    ),
+                    blob(
+                      const Alignment(0.2, 1),
+                      AppColors.gain,
+                      0.10 * k,
+                      700,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+        child,
+      ],
     );
   }
 }
@@ -162,6 +281,15 @@ class SectionTitle extends StatelessWidget {
     padding: const EdgeInsets.fromLTRB(4, 22, 4, 10),
     child: Row(
       children: [
+        Container(
+          width: 4,
+          height: 16,
+          margin: const EdgeInsets.only(right: 10),
+          decoration: BoxDecoration(
+            gradient: AppColors.accentGradient,
+            borderRadius: BorderRadius.circular(2),
+          ),
+        ),
         Expanded(
           child: Text(
             text,

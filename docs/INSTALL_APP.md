@@ -52,7 +52,9 @@ data first** instead.
 
 - **Test** and **Live:** the account, what the bot is doing right now,
   holdings, activity, and (Live) buys waiting for your approval.
-- **AI analyst:** its recent calls, a chat box, **What the bot learned**
+- **AI analyst:** its recent calls, **Were its calls right?** (how the stocks
+  it approved and blocked did a month later), a chat box that shows the
+  answer as it's written, **What the bot learned**
   (weekly lessons and how much each idea source counts) and the
   **Strategy lab** (rule changes it tested). In Live, new lessons and rule
   changes wait here for **Use in Live** or **Not now**.

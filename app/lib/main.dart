@@ -91,37 +91,40 @@ class _HomeShellState extends State<HomeShell> {
     );
     if (wide) {
       return Scaffold(
-        body: Row(
-          children: [
-            NavigationRail(
-              selectedIndex: index,
-              onDestinationSelected: (i) => setState(() => index = i),
-              labelType: NavigationRailLabelType.all,
-              leading: Padding(
-                padding: EdgeInsets.symmetric(vertical: 18),
-                child: Icon(
-                  Icons.show_chart_rounded,
-                  color: AppColors.accent,
-                  size: 30,
-                ),
-              ),
-              destinations: [
-                for (final d in _destinations)
-                  NavigationRailDestination(
-                    icon: Icon(d.$1),
-                    selectedIcon: Icon(d.$2),
-                    label: Text(d.$3),
+        backgroundColor: Colors.transparent,
+        body: AuroraBackground(
+          child: Row(
+            children: [
+              NavigationRail(
+                selectedIndex: index,
+                onDestinationSelected: (i) => setState(() => index = i),
+                labelType: NavigationRailLabelType.all,
+                leading: Padding(
+                  padding: EdgeInsets.symmetric(vertical: 18),
+                  child: Icon(
+                    Icons.show_chart_rounded,
+                    color: AppColors.accent,
+                    size: 30,
                   ),
-              ],
-            ),
-            const VerticalDivider(width: 1),
-            Expanded(child: body),
-          ],
+                ),
+                destinations: [
+                  for (final d in _destinations)
+                    NavigationRailDestination(
+                      icon: Icon(d.$1),
+                      selectedIcon: Icon(d.$2),
+                      label: Text(d.$3),
+                    ),
+                ],
+              ),
+              const VerticalDivider(width: 1),
+              Expanded(child: body),
+            ],
+          ),
         ),
       );
     }
     return Scaffold(
-      body: body,
+      body: AuroraBackground(child: body),
       bottomNavigationBar: NavigationBar(
         selectedIndex: index,
         onDestinationSelected: (i) => setState(() => index = i),

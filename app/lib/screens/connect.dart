@@ -44,17 +44,7 @@ class _ConnectScreenState extends State<ConnectScreen> {
   Widget build(BuildContext context) {
     final t = Theme.of(context).textTheme;
     return Scaffold(
-      body: Container(
-        decoration: BoxDecoration(
-          gradient: RadialGradient(
-            center: const Alignment(-0.6, -0.8),
-            radius: 1.4,
-            colors: [
-              AppColors.accent.withValues(alpha: 0.22),
-              Colors.transparent,
-            ],
-          ),
-        ),
+      body: AuroraBackground(
         child: SafeArea(
           child: Center(
             child: SingleChildScrollView(

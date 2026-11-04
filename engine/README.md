@@ -61,9 +61,17 @@ calendar, so holidays and early closes are handled).
    both (Sharpe +0.10 on the unseen part, higher return, a drop no more than
    1 point worse) and fixes some of the current rules' losing trades. Test
    uses it at once; Live after your approval; either can be undone.
+8. **Grades the analyst** (`scorecard.py`). With the weekly review it looks
+   at every analyst call at least a month old (20 trading days) and compares
+   how the approved and the blocked stocks did against SPY over that month.
+   The result is shown in the app ("Were its calls right?") and given to the
+   weekly lessons, so the analyst hears about winners it turned away too.
 
 **AI spending cap** (`spend.py`): every Claude call is priced from its token
 counts and counted toward a monthly cap ($20 by default, set in the app).
+Before a call starts, its worst-case cost (its whole output allowance plus
+what its web searches could add) is set aside, and the call only goes out if
+that still fits, so calls running side by side can't overshoot the cap.
 At the cap the analyst pauses until the 1st: no penny-stock buys, other buys
 on the rules alone, as when Claude can't be reached.
 
