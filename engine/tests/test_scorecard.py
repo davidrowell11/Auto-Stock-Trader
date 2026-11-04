@@ -94,14 +94,34 @@ class LearnerScorecardTests(unittest.TestCase):
         self.assertIn("helping", card["verdict"])
         self.assertIn("helping", report(j, "live")["scorecard"]["verdict"])
 
+    def test_no_prices_fetched_until_a_call_is_a_month_old(self):
+        j = Journal()
+        j.save_view("test", "AAA", 10, "buy", 0.7, "", [])  # today: nothing to grade yet
+        fetched = []
+        learner = Learner(j, prices_fn=lambda s, d: fetched.append(s) or {})
+        self.assertIsNone(learner.grade_analyst())
+        self.assertEqual(fetched, [])
+
+    def test_bad_data_never_stops_the_weekly_review(self):
+        j = Journal()
+        j.save_view("test", "AAA", 10, "buy", 0.7, "", [])
+        j.db.execute("UPDATE analyst_views SET day = '2026-06-01'")
+        zero = {"AAA": bars(START, [0.0] * 60), "SPY": bars(START, [100.0] * 60)}
+        learner = Learner(j, now=lambda: datetime(2026, 9, 1, tzinfo=timezone.utc),
+                          prices_fn=lambda s, d: zero)
+        card = learner.grade_analyst()  # a zero price is skipped, not a crash
+        self.assertEqual(card["waiting"], 1)
+
     def test_price_failure_skips_the_scorecard(self):
         j = Journal()
         j.save_view("test", "AAA", 10, "buy", 0.7, "", [])
+        j.db.execute("UPDATE analyst_views SET day = '2026-06-01'")
 
         def broken(symbols, days):
             raise RuntimeError("no data")
 
-        learner = Learner(j, prices_fn=broken)
+        learner = Learner(j, now=lambda: datetime(2026, 9, 1, tzinfo=timezone.utc),
+                          prices_fn=broken)
         self.assertIsNone(learner.grade_analyst())
         self.assertIsNone(report(j, "test")["scorecard"])
 

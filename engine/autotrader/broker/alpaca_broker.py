@@ -11,6 +11,7 @@ Test key can never place a real-money trade:
 from __future__ import annotations
 
 import os
+import time as clock
 import uuid
 from collections.abc import Iterable
 from datetime import datetime, time, timedelta, timezone
@@ -22,6 +23,8 @@ from .base import Broker
 
 
 NEW_YORK = ZoneInfo("America/New_York")
+LOOKUP_WAITS = (0.0, 1.0, 2.0)  # seconds before each look for an order whose reply was lost
+DEAD_ORDER_STATUSES = {"rejected", "canceled", "cancelled", "expired"}
 EXTENDED_START = time(4, 0)  # pre-market opens
 EXTENDED_END = time(20, 0)  # after-hours trading ends
 
@@ -128,11 +131,18 @@ class AlpacaBroker(Broker):
         try:
             return str(self.trading.submit_order(req).id)
         except Exception:
-            # Did Alpaca take it anyway? If so, it's placed; if not (or we can't tell), it failed.
-            try:
-                return str(self.trading.get_order_by_client_id(client_id).id)
-            except Exception:
-                pass
+            # Did Alpaca take it anyway? Look a few times, since a new order can take a moment
+            # to show up. A rejected or cancelled one counts as failed.
+            for wait in LOOKUP_WAITS:
+                clock.sleep(wait)
+                try:
+                    found = self.trading.get_order_by_client_id(client_id)
+                except Exception:
+                    continue
+                status = str(getattr(found, "status", "")).lower().rsplit(".", 1)[-1]
+                if status in DEAD_ORDER_STATUSES:
+                    break
+                return str(found.id)
             raise
 
     def open_order_symbols(self) -> set[str]:

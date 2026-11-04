@@ -23,7 +23,7 @@ from .market import MARKET, Mood, market_mood
 from .models import Bar, OrderRequest, Position, Side, Signal
 from .signals.book import TOTAL_BOOST_MAX
 from .signals.news import NewsCheck
-from .risk import RiskManager, closest_holding
+from .risk import RiskManager
 from .universe import build_universe, sector_of
 
 log = logging.getLogger("autotrader")
@@ -411,18 +411,12 @@ class Engine:
                 report.skipped.append(f"{sig.symbol}: penny stocks are only bought in regular hours")
                 continue
             sector = sector_of(sig.symbol)
-            twin = closest_holding(sig.symbol, bars, risk.positions)
-            twin_note = None
-            if twin is not None and twin[0].sector != sector:
-                # Moves with something it already holds: share that holding's sector limit.
-                sector = twin[0].sector
-                twin_note = (f"Moves closely with {twin[0].symbol} ({twin[1]:.2f} correlation), so it "
-                             f"shares {twin[0].symbol}'s {sector} limit")
             asset = self.assets.get(sig.symbol)
             # Whole shares outside regular hours, where fractional orders aren't always accepted.
             fractional = (bool(getattr(asset, "fractionable", False)) and not is_penny
                           and not self.extended)
-            size = risk.size_buy(sig.symbol, sig.price, sector, is_penny, fractional)
+            size = risk.size_buy(sig.symbol, sig.price, sector, is_penny, fractional, bars)
+            twin_note = size.twin
             if size.qty <= 0:
                 report.skipped.append(f"{sig.symbol}: {size.note}"
                                       + (f" ({twin_note[0].lower()}{twin_note[1:]})" if twin_note else ""))

@@ -200,13 +200,44 @@ class AfterHoursServerTests(unittest.TestCase):
         self.assertIsNotNone(sell.limit_price)
 
 
+@mock.patch.object(alpaca_broker, "LOOKUP_WAITS", (0, 0))
 class LostReplyTests(unittest.TestCase):
+    def test_rejected_order_counts_as_failed(self):
+        class Trading:
+            def submit_order(self, req):
+                raise TimeoutError("read timed out")
+
+            def get_order_by_client_id(self, client_id):
+                return SimpleNamespace(id="x", status="OrderStatus.REJECTED")
+
+        b = alpaca_broker.AlpacaBroker.__new__(alpaca_broker.AlpacaBroker)
+        b.trading = Trading()
+        with self.assertRaises(TimeoutError):
+            b.submit_order(OrderRequest("AAPL", Side.BUY, 1, None, "test"))
+
+    def test_order_that_shows_up_late_is_found(self):
+        looks = []
+
+        class Trading:
+            def submit_order(self, req):
+                raise TimeoutError("read timed out")
+
+            def get_order_by_client_id(self, client_id):
+                looks.append(1)
+                if len(looks) == 1:
+                    raise LookupError("not there yet")
+                return SimpleNamespace(id="late1", status="new")
+
+        b = alpaca_broker.AlpacaBroker.__new__(alpaca_broker.AlpacaBroker)
+        b.trading = Trading()
+        self.assertEqual(b.submit_order(OrderRequest("AAPL", Side.BUY, 1, None, "test")), "late1")
+
     def test_order_whose_reply_was_lost_is_found_by_its_id(self):
         placed = {}
 
         class Trading:
             def submit_order(self, req):
-                placed[req.client_order_id] = SimpleNamespace(id="abc123")
+                placed[req.client_order_id] = SimpleNamespace(id="abc123", status="accepted")
                 raise TimeoutError("read timed out")  # Alpaca took it; the reply never came
 
             def get_order_by_client_id(self, client_id):

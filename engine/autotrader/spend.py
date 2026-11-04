@@ -53,6 +53,7 @@ def price_for(model: str) -> tuple[float, float]:
 WEB_SEARCH_PER_CALL = 10.0 / 1000
 SEARCH_RESULT_TOKENS = 30_000  # the most a web search is expected to add to the input
 CHARS_PER_TOKEN = 3  # a cautious guess for sizing the request before it's sent
+MAX_PROMPT_TOKENS = 200_000  # the context window: no request can send more than this
 
 
 class SpendingCapReached(RuntimeError):
@@ -66,7 +67,7 @@ def most_it_could_cost(kwargs: dict) -> float:
                    if isinstance(t, dict) and str(t.get("type", "")).startswith("web_search"))
     prompt = len(str(kwargs.get("system", "")) + str(kwargs.get("messages", ""))
                  + str(kwargs.get("tools", ""))) / CHARS_PER_TOKEN
-    tokens_in = prompt + searches * SEARCH_RESULT_TOKENS
+    tokens_in = min(prompt, MAX_PROMPT_TOKENS) + searches * SEARCH_RESULT_TOKENS
     tokens_out = float(kwargs.get("max_tokens") or 0)
     return tokens_in * price_in / 1e6 + tokens_out * price_out / 1e6 + searches * WEB_SEARCH_PER_CALL
 

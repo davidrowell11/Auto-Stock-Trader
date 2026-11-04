@@ -242,32 +242,37 @@ class Pill extends StatelessWidget {
   final IconData? icon;
 
   @override
-  Widget build(BuildContext context) => Container(
-    padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
-    decoration: BoxDecoration(
-      color: color.withValues(alpha: 0.14),
-      borderRadius: BorderRadius.circular(99),
-    ),
-    child: Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        if (icon != null) ...[
-          Icon(icon, size: 13, color: color),
-          const SizedBox(width: 4),
-        ],
-        Flexible(
-          child: Text(
-            text,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(
-              color: color,
-              fontSize: 12,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
+  Widget build(BuildContext context) => LayoutBuilder(
+    // Shrinks with an ellipsis where its width is limited (a Wrap, a narrow card); beside
+    // other widgets in a Row it keeps its natural width.
+    builder: (context, c) {
+      final label = Text(
+        text,
+        overflow: TextOverflow.ellipsis,
+        style: TextStyle(
+          color: color,
+          fontSize: 12,
+          fontWeight: FontWeight.w600,
         ),
-      ],
-    ),
+      );
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.14),
+          borderRadius: BorderRadius.circular(99),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (icon != null) ...[
+              Icon(icon, size: 13, color: color),
+              const SizedBox(width: 4),
+            ],
+            c.hasBoundedWidth ? Flexible(child: label) : label,
+          ],
+        ),
+      );
+    },
   );
 }
 

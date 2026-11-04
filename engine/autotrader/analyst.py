@@ -216,7 +216,5 @@ def ask_stream(client, question: str, context: dict, model: str = MODEL) -> Iter
         if response.stop_reason != "pause_turn":
             break
         messages = [*messages, {"role": "assistant", "content": response.content}]
-        if wrote:
-            yield "\n\n"
     if not wrote:
         yield "Sorry, I couldn't come up with an answer. Try asking another way."

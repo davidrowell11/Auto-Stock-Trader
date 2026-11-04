@@ -42,7 +42,7 @@ class CorrelationTests(unittest.TestCase):
         # AAPL took about 2.4% of the 3% Technology limit, so its twin only gets what's left.
         aapl_value = broker.orders[0].qty * aapl[-1]
         self.assertLessEqual(broker.orders[-1].qty * twin[-1], 100_000 * 0.03 - aapl_value + 1)
-        self.assertIn("limited by sector limit", " ".join(buy["reasons"]))
+        self.assertIn("limited by limit it shares with AAPL", " ".join(buy["reasons"]))
         self.assertFalse(report.skipped and any("TWIN" in s for s in report.skipped))
 
     def test_unrelated_stock_keeps_its_own_limit(self):
@@ -55,6 +55,22 @@ class CorrelationTests(unittest.TestCase):
         buy = eng.journal.trades("test")[-1]
         self.assertEqual(buy["symbol"], "OTHER")
         self.assertNotIn("Moves closely", " ".join(buy["reasons"]))
+
+
+class SharedLimitTests(unittest.TestCase):
+    def test_its_own_sector_limit_still_applies(self):
+        from autotrader.models import Account, Position
+        from autotrader.risk import RiskManager
+
+        moves = make_bars(wiggly(1))
+        bars = {"XOM": moves, "MSFT": make_bars([c * 2 for c in wiggly(1)])}
+        held = [Position("XOM", 10, 100, 100, "Energy"),  # small energy holding
+                Position("AAPL", 25, 100, 100, "Technology")]  # tech already at 2.5%
+        risk = RiskManager(Settings(max_sector_pct=0.025).clamped(),
+                           Account(equity=100_000, cash=90_000, last_equity=100_000), held, 100_000)
+        size = risk.size_buy("MSFT", 200, "Technology", False, bars=bars)
+        self.assertEqual(size.qty, 0)  # moves with XOM, but Technology is full
+        self.assertIn("Moves closely with XOM", size.twin)
 
 
 class StaleDataTests(unittest.TestCase):

@@ -52,14 +52,28 @@ def _close_on(bars: list[Bar], day: date) -> float | None:
     return price
 
 
+def _date(v: dict) -> date | None:
+    try:
+        return date.fromisoformat(str(v.get("day", ""))[:10])
+    except ValueError:
+        return None
+
+
 def calls_to_grade(views: list[dict], today: date) -> list[dict]:
     """One call per stock per day (the latest one), from the last six months."""
     latest: dict[tuple[str, str], dict] = {}
     oldest = today - timedelta(days=LOOK_BACK_DAYS)
     for v in views:
-        if date.fromisoformat(v["day"]) >= oldest:
+        d = _date(v)
+        if d is not None and d >= oldest:
             latest[(v["symbol"], v["day"])] = v
     return list(latest.values())
+
+
+def any_ready(views: list[dict], today: date) -> bool:
+    """Is at least one call old enough (about a month, in calendar days) to grade?"""
+    ready = today - timedelta(days=HORIZON * 7 // 5)
+    return any(_date(v) <= ready for v in calls_to_grade(views, today))
 
 
 def grade(views: list[dict], bars: dict[str, list[Bar]], today: date) -> dict:
@@ -69,15 +83,19 @@ def grade(views: list[dict], bars: dict[str, list[Bar]], today: date) -> dict:
     waiting = 0
     for v in calls_to_grade(views, today):
         history = bars.get(v["symbol"], [])
-        day = date.fromisoformat(v["day"])
+        day = _date(v)
         i = _index_on_or_after(history, day)
         if i is None or i + HORIZON >= len(history) or v["action"] not in graded:
             waiting += 1
             continue
         start, end = history[i], history[i + HORIZON]
-        ret = end.close / (v["price"] or start.close) - 1
         m0, m1 = _close_on(market, _day(start.time)), _close_on(market, _day(end.time))
-        vs_market = ret - (m1 / m0 - 1) if m0 and m1 else ret
+        if start.close <= 0 or not m0 or not m1:
+            waiting += 1  # missing prices: graded once they're there
+            continue
+        # Both from the same day's close, so the stock and the market are measured alike.
+        ret = end.close / start.close - 1
+        vs_market = ret - (m1 / m0 - 1)
         graded[v["action"]].append({"symbol": v["symbol"], "day": v["day"],
                                     "return": round(ret, 4), "vs_market": round(vs_market, 4)})
 
@@ -127,5 +145,5 @@ def bars_needed(views: list[dict], today: date) -> int:
     calls = calls_to_grade(views, today)
     if not calls:
         return 0
-    oldest = min(date.fromisoformat(v["day"]) for v in calls)
+    oldest = min(_date(v) for v in calls)
     return int((today - oldest).days * 252 / 365) + HORIZON + 5

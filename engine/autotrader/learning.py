@@ -266,16 +266,16 @@ class Learner:
         if self.prices_fn is None:
             return None
         today = self.now().date()
-        views = self.journal.views("test") + self.journal.views("live")
-        if not scorecard.calls_to_grade(views, today):
-            return None
         try:
+            views = self.journal.views("test") + self.journal.views("live")
+            if not scorecard.any_ready(views, today):
+                return None  # nothing is a month old yet: no need to fetch prices
             bars = self.prices_fn(scorecard.symbols_of(views, today),
                                   scorecard.bars_needed(views, today))
-        except Exception as exc:  # prices can wait until next time
-            log.warning("Couldn't fetch prices for the analyst scorecard: %s", exc)
+            card = scorecard.grade(views, bars, today)
+        except Exception as exc:  # the scorecard can wait; it must never stop the weekly review
+            log.warning("Couldn't grade the analyst's calls: %s", exc)
             return None
-        card = scorecard.grade(views, bars, today)
         self.journal.save_memory("test", "scorecard", card)
         return card
 

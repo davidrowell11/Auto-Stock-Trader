@@ -53,6 +53,7 @@ def closest_holding(symbol: str, bars: dict, positions: Sequence[Position]):
 class SizeDecision:
     qty: float  # whole shares, or fractions when the stock allows it
     note: str
+    twin: str | None = None  # "Moves closely with AAPL (0.91 correlation)..." when that applied
 
 
 class RiskManager:
@@ -112,7 +113,7 @@ class RiskManager:
     MIN_FRACTIONAL_DOLLARS = 1.0  # Alpaca's smallest fractional order
 
     def size_buy(self, symbol: str, price: float, sector: str, penny: bool,
-                 fractional: bool = False) -> SizeDecision:
+                 fractional: bool = False, bars: dict | None = None) -> SizeDecision:
         """How much to buy. Fractional shares let a small budget hold pricey stocks."""
         if price <= 0:
             return SizeDecision(0, "No valid price")
@@ -133,6 +134,16 @@ class RiskManager:
             "sector limit": cap * self.s.max_sector_pct
             - sum(p.market_value for p in self.positions if p.sector == sector),
         }
+        twin_note = None
+        match = closest_holding(symbol, bars, self.positions) if bars else None
+        if match is not None and match[0].sector != sector:
+            # It moves with something already held, so it's the same bet: it also has to fit
+            # under that holding's sector limit (on top of its own).
+            twin, corr = match
+            limits[f"limit it shares with {twin.symbol}"] = cap * self.s.max_sector_pct - sum(
+                p.market_value for p in self.positions if p.sector == twin.sector)
+            twin_note = (f"Moves closely with {twin.symbol} ({corr:.2f} correlation), so it also "
+                         f"counts toward {twin.symbol}'s {twin.sector} limit")
         if penny:
             penny_value = sum(
                 p.market_value for p in self.positions if p.current_price < self.s.penny_price
@@ -148,8 +159,8 @@ class RiskManager:
         else:
             qty = math.floor(dollars / price) if dollars > 0 else 0
         if qty <= 0:
-            return SizeDecision(0, f"No room under the {binding}")
-        return SizeDecision(qty, f"{qty:g} shares, limited by {binding}")
+            return SizeDecision(0, f"No room under the {binding}", twin_note)
+        return SizeDecision(qty, f"{qty:g} shares, limited by {binding}", twin_note)
 
     def register_buy(self, symbol: str, qty: float, price: float, sector: str) -> None:
         """Count a just-placed buy so the next sizing in the same cycle sees it."""

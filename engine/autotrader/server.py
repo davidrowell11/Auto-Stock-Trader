@@ -41,7 +41,7 @@ from .lab import Lab, clamp_rules
 from .learning import Learner, LearnerBusy
 from .learning import report as learning_report
 from .models import OrderRequest, Side
-from .risk import RiskManager
+from .risk import CORRELATION_DAYS, RiskManager
 from .universe import sector_of
 
 log = logging.getLogger("autotrader.server")
@@ -393,7 +393,14 @@ class BotRunner:
                            mood_multiplier=engine.mood.size_multiplier)
         asset = engine.assets.get(a["symbol"])
         fractional = bool(getattr(asset, "fractionable", False)) and not is_penny and not extended
-        size = risk.size_buy(a["symbol"], price, sector_of(a["symbol"]), is_penny, fractional)
+        # Prices for the look-alike check: does it move with something the bot already holds?
+        try:
+            bars = self.broker.get_daily_bars([a["symbol"], *(p.symbol for p in positions)],
+                                              CORRELATION_DAYS + 5)
+        except Exception as exc:
+            log.warning("Couldn't fetch prices for the look-alike check: %s", exc)
+            bars = None
+        size = risk.size_buy(a["symbol"], price, sector_of(a["symbol"]), is_penny, fractional, bars)
         qty = min(float(a["qty"]), size.qty)  # re-checked: prices and the account may have moved
         if not fractional:
             qty = float(int(qty))
