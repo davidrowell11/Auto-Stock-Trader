@@ -27,6 +27,7 @@ class DemoApi implements TraderApi {
       dailyLossPct: 0.02,
       cashReservePct: 0.10,
       afterHoursBuys: true,
+      quickReviews: true,
     ),
     'live': BotSettings(
       budget: 1000,
@@ -249,7 +250,7 @@ class DemoApi implements TraderApi {
         reasoning: 'Momentum is strong, three insiders bought on the open market, and recent news is positive.',
       ),
     ];
-    return AnalystFeed(views: views, total: 42, approved: 29);
+    return AnalystFeed(views: views, total: 42, approved: 29, quick: 31);
   }
 
   late final _memory = LearnedMemory(
@@ -317,6 +318,7 @@ class DemoApi implements TraderApi {
       dailyLossPct: s.dailyLossPct,
       cashReservePct: s.cashReservePct,
       afterHoursBuys: changes['after_hours_buys'] as bool? ?? s.afterHoursBuys,
+      quickReviews: changes['quick_reviews'] as bool? ?? s.quickReviews,
     );
   }
 

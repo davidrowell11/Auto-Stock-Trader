@@ -87,6 +87,9 @@ class Settings:
     # New buys in pre-market (4am-9:30am) and after hours (4pm-8pm). Selling to protect
     # holdings happens in those hours either way. On for Test, off for Live until switched on.
     after_hours_buys: bool = False
+    # Cheaper AI reviews: a fast, low-cost Claude model reviews first and the full analyst only
+    # sees the close calls (and every penny stock). On for Test, off for Live until switched on.
+    quick_reviews: bool = False
     always_watch: tuple[str, ...] = ()
     never_buy: tuple[str, ...] = ()
     poll_seconds: int = 300

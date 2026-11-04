@@ -136,6 +136,38 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ],
             ),
           ),
+          const SectionTitle('AI analyst costs'),
+          GlassCard(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'With cheaper reviews, a fast low-cost Claude model looks at each stock first. '
+                  'Only clear calls stand: a confident buy with no red flags, or a skip that names one. '
+                  'Close calls and every penny stock still go to the full analyst.',
+                  style: t.bodySmall?.copyWith(color: AppColors.muted),
+                ),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Test: cheaper AI reviews'),
+                  value: test!.quickReviews,
+                  activeThumbColor: AppColors.test,
+                  onChanged: (v) => save('test', {'quick_reviews': v}),
+                ),
+                const Divider(),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Live: cheaper AI reviews'),
+                  subtitle: const Text(
+                    'Try it in Test first and check the analyst\'s calls.',
+                  ),
+                  value: live!.quickReviews,
+                  activeThumbColor: AppColors.live,
+                  onChanged: (v) => save('live', {'quick_reviews': v}),
+                ),
+              ],
+            ),
+          ),
         ],
         if (test != null) ...[
           const SectionTitle('Your stock lists'),

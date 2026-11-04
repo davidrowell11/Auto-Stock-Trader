@@ -266,10 +266,13 @@ class AnalystView {
     required this.action,
     required this.confidence,
     required this.reasoning,
+    this.model,
   });
   final String day, symbol, action, reasoning;
   final double price, confidence;
+  final String? model; // which Claude model reviewed it
   bool get isBuy => action == 'buy';
+  bool get isQuick => model?.contains('haiku') ?? false;
   factory AnalystView.fromJson(Map<String, dynamic> j) => AnalystView(
     day: j['day'] as String,
     symbol: j['symbol'] as String,
@@ -277,6 +280,7 @@ class AnalystView {
     action: j['action'] as String,
     confidence: _d(j['confidence']),
     reasoning: j['reasoning'] as String,
+    model: j['model'] as String?,
   );
 }
 
@@ -285,13 +289,16 @@ class AnalystFeed {
     required this.views,
     required this.total,
     required this.approved,
+    this.quick = 0,
   });
   final List<AnalystView> views;
   final int total, approved;
+  final int quick; // reviews the fast, cheaper model settled on its own
   factory AnalystFeed.fromJson(Map<String, dynamic> j) => AnalystFeed(
     views: [for (final v in j['views'] as List) AnalystView.fromJson(v)],
     total: (j['total'] as num).toInt(),
     approved: (j['approved'] as num).toInt(),
+    quick: (j['quick'] as num?)?.toInt() ?? 0,
   );
 }
 
@@ -333,8 +340,10 @@ class BotSettings {
     required this.dailyLossPct,
     required this.cashReservePct,
     this.afterHoursBuys = false,
+    this.quickReviews = false,
   });
   final double? budget;
+  final bool quickReviews; // a fast, cheaper model reviews first; close calls get the full analyst
   final bool approveMode;
   final bool afterHoursBuys; // new buys in pre-market and after hours
   final List<String> alwaysWatch, neverBuy;
@@ -350,6 +359,7 @@ class BotSettings {
     dailyLossPct: _d(j['daily_loss_pct']),
     cashReservePct: _d(j['cash_reserve_pct']),
     afterHoursBuys: j['after_hours_buys'] as bool? ?? false,
+    quickReviews: j['quick_reviews'] as bool? ?? false,
   );
 }
 

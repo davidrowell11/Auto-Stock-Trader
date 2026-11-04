@@ -40,6 +40,11 @@ calendar, so holidays and early closes are handled).
    searches recent news for red flags (earnings next week, share offerings,
    fraud, hype), and says buy or skip with a confidence score and a short
    reason. It can only veto a buy. Its views are saved as a scorecard.
+   With cheaper reviews on (default in Test, a switch for Live), a fast,
+   low-cost model looks first; its answer stands only when it's a clear
+   call (a buy at least 15 points above the confidence needed with no red
+   flags, or a skip that names a red flag). Close calls and every penny
+   stock go to the full analyst.
 6. **Learns from its own trades** (`learning.py`). Each buy records what
    pointed the bot at the stock (trend rules, the screener, insiders,
    Congress, the analyst). Once a week it looks at its finished trades:

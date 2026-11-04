@@ -59,7 +59,8 @@ def _now() -> str:
 # Added after the first release; older journals get them on startup.
 STOP_COLUMNS = {"qty": "REAL", "order_id": "TEXT", "order_side": "TEXT"}
 # What pointed the bot at a stock ("trend", "screener", "insider", ...), so it can learn which work.
-LATER_COLUMNS = {"stops": STOP_COLUMNS, "trades": {"sources": "TEXT"}, "approvals": {"sources": "TEXT"}}
+LATER_COLUMNS = {"stops": STOP_COLUMNS, "trades": {"sources": "TEXT"}, "approvals": {"sources": "TEXT"},
+                 "analyst_views": {"model": "TEXT"}}
 
 
 @dataclass
@@ -225,13 +226,13 @@ class Journal:
 
     # ----- AI analyst views (cached per day; also the analyst's scorecard) -----
     def save_view(self, mode: str, symbol: str, price: float, action: str, confidence: float,
-                  reasoning: str, red_flags: list[str]) -> None:
+                  reasoning: str, red_flags: list[str], model: str | None = None) -> None:
         with self.db:
             self.db.execute(
                 "INSERT INTO analyst_views (ts, day, mode, symbol, price, action, confidence,"
-                " reasoning, red_flags) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " reasoning, red_flags, model) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (_now(), _now()[:10], mode, symbol, price, action, confidence, reasoning,
-                 json.dumps(red_flags)),
+                 json.dumps(red_flags), model),
             )
 
     def todays_view(self, mode: str, symbol: str) -> dict | None:
@@ -248,7 +249,7 @@ class Journal:
 
     def views(self, mode: str) -> list[dict]:
         cur = self.db.execute(
-            "SELECT day, symbol, price, action, confidence, reasoning FROM analyst_views"
+            "SELECT day, symbol, price, action, confidence, reasoning, model FROM analyst_views"
             " WHERE mode = ? ORDER BY id", (mode,),
         )
         cols = [c[0] for c in cur.description]

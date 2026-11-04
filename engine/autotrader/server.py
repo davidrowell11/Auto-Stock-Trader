@@ -30,6 +30,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from . import penny, strategy
+from .analyst import QUICK_MODEL
 from .broker.base import Broker
 from .config import HARD_LIMITS, Mode, Settings, load_settings
 from .engine import APPROVAL_MAX_AGE, Engine, bot_positions, limit_for
@@ -43,7 +44,8 @@ from .universe import sector_of
 
 log = logging.getLogger("autotrader.server")
 
-EDITABLE = ("budget", "approve_mode", "always_watch", "never_buy", "after_hours_buys")
+EDITABLE = ("budget", "approve_mode", "always_watch", "never_buy", "after_hours_buys",
+            "quick_reviews")
 
 
 class SettingsStore:
@@ -81,6 +83,8 @@ class SettingsStore:
                      for k, v in saved.items() if k in EDITABLE}
         # After-hours buying starts on for Test (fake money) and off for Live.
         overrides.setdefault("after_hours_buys", mode is Mode.TEST)
+        # Cheaper AI reviews too: tried in Test first; switch on for Live in the app.
+        overrides.setdefault("quick_reviews", mode is Mode.TEST)
         if mode is Mode.LIVE:
             # Start small: never more than the starter cap of real money, whatever the file says.
             # Live never falls back to the whole account: without a saved cap it stays at the starter cap.
@@ -450,6 +454,7 @@ class SettingsUpdate(BaseModel):
     clear_budget: bool = False
     approve_mode: bool | None = None
     after_hours_buys: bool | None = None
+    quick_reviews: bool | None = None
     always_watch: list[str] | None = None
     never_buy: list[str] | None = None
 
@@ -570,7 +575,8 @@ def create_app(runners: dict[Mode, BotRunner], journal: Journal, token: str,
     def analyst_views(mode: str):
         views = list(reversed(journal.views(runner(mode).mode.value)))
         buys = [v for v in views if v["action"] == "buy"]
-        return {"views": views[:200], "total": len(views), "approved": len(buys)}
+        quick = sum(v.get("model") == QUICK_MODEL for v in views)
+        return {"views": views[:200], "total": len(views), "approved": len(buys), "quick": quick}
 
     @app.get("/api/{mode}/learning", **secured)
     def learning(mode: str):
@@ -642,8 +648,9 @@ def create_app(runners: dict[Mode, BotRunner], journal: Journal, token: str,
             changes["budget"] = body.budget
         if body.approve_mode is not None:
             changes["approve_mode"] = body.approve_mode
-        if body.after_hours_buys is not None:
-            changes["after_hours_buys"] = body.after_hours_buys
+        for key in ("after_hours_buys", "quick_reviews"):
+            if getattr(body, key) is not None:
+                changes[key] = getattr(body, key)
         for key in ("always_watch", "never_buy"):
             value = getattr(body, key)
             if value is not None:

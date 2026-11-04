@@ -31,6 +31,8 @@ log = logging.getLogger("autotrader")
 HISTORY_DAYS = strategy.MIN_HISTORY + 10
 APPROVAL_MAX_AGE = timedelta(hours=24)
 DUST = 1e-6  # share counts below this are treated as zero
+# Cheaper reviews: the fast model's "buy" stands only this far above the confidence needed.
+QUICK_MARGIN = 0.15
 
 
 EXTENDED_SESSIONS = {"pre", "after"}  # 4am-9:30am and 4pm-8pm New York time
@@ -463,8 +465,7 @@ class Engine:
             view = AnalystView(cached["action"], cached["confidence"], cached["reasoning"],
                                cached["red_flags"])
         else:
-            try:
-                view = self.analyst.review({
+            candidate = {
                     "symbol": sig.symbol,
                     "price": sig.price,
                     "penny_stock": is_penny,
@@ -474,14 +475,18 @@ class Engine:
                     "recent_headlines": self.news_seen.get(sig.symbol, NewsCheck()).headlines,
                     "lessons_from_past_trades": self.memory.lessons,
                     "similar_past_trades": similar or [],
-                })
-            except AnalystUnavailable as exc:
-                log.warning("Analyst unavailable for %s: %s", sig.symbol, exc)
-                if is_penny:
-                    return "analyst unavailable, and penny stocks always need its approval"
-                return None
+            }
+            view = self._quick_view(candidate, is_penny)
+            if view is None:
+                try:
+                    view = self.analyst.review(candidate)
+                except AnalystUnavailable as exc:
+                    log.warning("Analyst unavailable for %s: %s", sig.symbol, exc)
+                    if is_penny:
+                        return "analyst unavailable, and penny stocks always need its approval"
+                    return None
             self.journal.save_view(self.mode, sig.symbol, sig.price, view.action, view.confidence,
-                                   view.reasoning, view.red_flags)
+                                   view.reasoning, view.red_flags, getattr(view, "model", None))
         floor = self.s.penny_analyst_min_confidence if is_penny else self.s.analyst_min_confidence
         if not view.approves:
             flags = f" Red flags: {'; '.join(view.red_flags)}." if view.red_flags else ""
@@ -489,6 +494,27 @@ class Engine:
         if view.confidence < floor:
             return f"analyst confidence {view.confidence:.0%} is below the {floor:.0%} needed"
         return view
+
+    def _quick_view(self, candidate: dict, is_penny: bool) -> AnalystView | None:
+        """The fast model's view when it's clear-cut, or None to ask the full analyst.
+
+        Clear-cut means a confident buy with no red flags, or a skip that names a red flag.
+        Penny stocks and everything in between always go to the full analyst.
+        """
+        if not (self.s.quick_reviews and not is_penny and getattr(self.analyst, "supports_quick", False)):
+            return None
+        try:
+            view = self.analyst.review(candidate, quick=True)
+        except AnalystUnavailable as exc:
+            log.info("Quick review unavailable for %s, asking the full analyst: %s",
+                     candidate["symbol"], exc)
+            return None
+        if view.approves and not view.red_flags and view.confidence >= self.s.analyst_min_confidence + QUICK_MARGIN:
+            return view
+        if not view.approves and view.red_flags:
+            return view
+        self.progress(f"Close call on {candidate['symbol']}; asking the full AI analyst")
+        return None
 
     def recheck_buy(self, symbol: str) -> tuple[Signal | None, list[str]]:
         """Run the buy rules again for one stock (used when you approve a queued buy)."""

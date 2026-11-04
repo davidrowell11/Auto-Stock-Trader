@@ -378,7 +378,7 @@ def claude_lessons(client, model: str | None = None) -> LessonsFn:
             response = client.messages.create(
                 model=model or MODEL, max_tokens=4000, system=LESSONS_SYSTEM_PROMPT,
                 messages=[{"role": "user", "content": body}],
-                tools=[LESSONS_TOOL], tool_choice={"type": "tool", "name": "submit_lessons"},
+                tools=[LESSONS_TOOL],  # forced tool_choice isn't allowed on this model; the prompt asks
             )
         except Exception as exc:
             raise AnalystUnavailable(plain_error(exc)) from exc
@@ -386,6 +386,8 @@ def claude_lessons(client, model: str | None = None) -> LessonsFn:
             if getattr(block, "type", None) == "tool_use" and block.name == "submit_lessons":
                 data = block.input if isinstance(block.input, dict) else json.loads(block.input)
                 return list(data.get("lessons", []))
+        if response.stop_reason == "refusal":
+            raise AnalystUnavailable("The analyst declined to write lessons")
         raise AnalystUnavailable("The analyst didn't return lessons")
 
     return lessons
