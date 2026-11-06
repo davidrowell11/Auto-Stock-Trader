@@ -275,3 +275,24 @@ class BarCacheTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CompareTests(unittest.TestCase):
+    def test_runs_every_rule_set_and_judges_changes(self):
+        import random
+
+        from autotrader.compare import compare, table
+        rng = random.Random(3)
+        history = {}
+        for s in ["A", "B", "C", "SPY"]:
+            p, out = 50.0, []
+            for _ in range(500):
+                p *= 1 + 0.001 + rng.gauss(0, 0.012)
+                out.append(p)
+            history[s] = make_bars(out)
+        base = Settings(always_watch=("A", "B", "C")).clamped()
+        result = compare(history, base)
+        self.assertEqual(result["old"]["name"], "Rules before Nov 6")
+        self.assertTrue(all("holds_up" in c for c in result["changes"]))
+        self.assertEqual(len(result["changes"]), 3 + 3 + 2 + 2)
+        self.assertIn("Current rules", table(result))

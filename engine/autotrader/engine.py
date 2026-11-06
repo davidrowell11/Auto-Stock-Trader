@@ -452,7 +452,7 @@ class Engine:
                 report.skipped.append(f"{symbol}: trend score {sig.score:.2f} is under the "
                                       f"{self.s.min_score:.2f} minimum")
                 continue
-            stretch = strategy.stretched(history, sig.atr)
+            stretch = strategy.stretched(history, sig.atr, self.s.stretch_limit)
             if stretch:
                 report.skipped.append(f"{symbol}: {stretch}")
                 continue

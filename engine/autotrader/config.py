@@ -93,6 +93,8 @@ class Settings:
     min_position_fraction: float = 0.4
     # Trim a holding that has grown past this many times its size limit, back down to the limit.
     trim_over: float = 1.5
+    # Don't buy a stock this many average daily moves above its 20-day average (0: no check).
+    stretch_limit: float = 3.0
     # Lowest trend score worth buying (the strategy lab can raise it; 0 means any uptrend).
     min_score: float = 0.0
     max_signal_lookups: int = 10  # stocks per cycle checked for insider/Congress buying
@@ -116,10 +118,11 @@ class Settings:
             self,
             max_position_pct=min(self.max_position_pct, h.max_position_pct),
             max_open_positions=min(self.max_open_positions, h.max_open_positions),
-            max_new_buys_per_day=max(0, min(self.max_new_buys_per_day, h.max_new_buys_per_day)),
+            max_new_buys_per_day=int(max(0, min(self.max_new_buys_per_day, h.max_new_buys_per_day))),
             risk_per_trade_pct=min(self.risk_per_trade_pct, h.max_risk_per_trade_pct),
             min_position_fraction=min(1.0, max(0.0, self.min_position_fraction)),
             trim_over=max(1.1, self.trim_over),
+            stretch_limit=max(0.0, self.stretch_limit),
             daily_loss_pct=min(self.daily_loss_pct, h.max_daily_loss_pct),
             pause_drawdown_pct=min(self.pause_drawdown_pct, h.pause_drawdown_pct),
             drawdown_brake_pct=min(self.drawdown_brake_pct, h.pause_drawdown_pct),

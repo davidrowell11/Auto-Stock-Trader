@@ -74,14 +74,19 @@ def trail_stop(
     return max(current_stop, highest_close - multiple * atr)
 
 
-def stretched(bars: Sequence[Bar], atr: float) -> str | None:
-    """Why a stock has run up too far to buy right now (it tends to fall back), or None."""
+def stretched(bars: Sequence[Bar], atr: float, limit: float = STRETCH_LIMIT) -> str | None:
+    """Why a stock has run up too far to buy right now (it tends to fall back), or None.
+
+    ``limit`` is in average daily moves above the 20-day average; 0 turns the check off.
+    """
+    if not limit or limit <= 0:
+        return None
     closes = [b.close for b in bars]
     sma20 = ind.sma(closes, 20)
     if sma20 is None or not atr or atr <= 0:
         return None
     gap = (closes[-1] - sma20) / atr
-    if gap > STRETCH_LIMIT:
+    if gap > limit:
         return (f"up too far too fast ({gap:.1f} average daily moves above its 20-day average); "
                 "waiting for a pull-back")
     return None
