@@ -56,7 +56,7 @@ EXPERIMENTS: dict[str, dict] = {
 
 # Each Nov 6 change undone on its own, to see which one helps or hurts.
 ABLATIONS: dict[str, dict] = {
-    "Without the stretch check": {"stretch_limit": 0.0},
+    "With the stretch check (off since Nov 6)": {"stretch_limit": 3.0},
     "Without the daily buy limit": {"max_new_buys_per_day": 6},
     "Without risk sizing": {"risk_per_trade_pct": 0.005},
     "Without the minimum size": {"min_position_fraction": 0.0},

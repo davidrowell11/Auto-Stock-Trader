@@ -94,7 +94,9 @@ class Settings:
     # Trim a holding that has grown past this many times its size limit, back down to the limit.
     trim_over: float = 1.5
     # Don't buy a stock this many average daily moves above its 20-day average (0: no check).
-    stretch_limit: float = 3.0
+    # Off: on the ~500 most-traded stocks it cut 3-year backtest returns from +35% to +10%,
+    # since strong trends spend much of their time "stretched" (autotrader.compare --ablate).
+    stretch_limit: float = 0.0
     # Sell when a holding closes below its average over this many days (the trend has broken).
     trend_exit_days: int = 50
     # Lowest trend score worth buying (the strategy lab can raise it; 0 means any uptrend).
