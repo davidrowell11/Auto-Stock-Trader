@@ -9,6 +9,7 @@ It runs, on one download of prices:
 * the rules from before the Nov 6 changes (no stretch check, no daily buy limit,
   no risk sizing, no minimum size, no trims),
 * the current rules,
+* the current rules with each Nov 6 change undone on its own (``ABLATIONS``),
 * each one-step change the strategy lab may try (see lab.py),
 * a few bigger ideas the lab doesn't try on its own (``EXPERIMENTS``),
 
@@ -53,6 +54,16 @@ EXPERIMENTS: dict[str, dict] = {
 }
 
 
+# Each Nov 6 change undone on its own, to see which one helps or hurts.
+ABLATIONS: dict[str, dict] = {
+    "Without the stretch check": {"stretch_limit": 0.0},
+    "Without the daily buy limit": {"max_new_buys_per_day": 6},
+    "Without risk sizing": {"risk_per_trade_pct": 0.005},
+    "Without the minimum size": {"min_position_fraction": 0.0},
+    "Without trims": {"trim_over": 1000.0},
+}
+
+
 def row(name: str, full: BacktestResult, tune: BacktestResult, unseen: BacktestResult) -> dict:
     return {
         "name": name,
@@ -77,7 +88,8 @@ def holds_up(change: dict, base: dict) -> bool:
             and change["unseen_drop"] <= base["unseen_drop"] + MAX_EXTRA_DROP)
 
 
-def compare(history: dict, base: Settings, cost_bps: float = 10.0) -> dict:
+def compare(history: dict, base: Settings, cost_bps: float = 10.0,
+            ablate_only: bool = False) -> dict:
     tune_h, unseen_h = split_history(history)
 
     def run(settings: Settings, name: str) -> dict:
@@ -88,15 +100,12 @@ def compare(history: dict, base: Settings, cost_bps: float = 10.0) -> dict:
     spy = history.get("SPY")
     out = {"old": run(replace(base, **OLD_RULES).clamped(), "Rules before Nov 6"),
            "current": run(base, "Current rules"), "changes": []}
-    for knob, values in KNOBS.items():
-        here = getattr(base, knob)
-        for v in values:
-            if v == here:
-                continue
-            r = run(replace(base, **{knob: type(here)(v)}).clamped(), f"{knob} {here:g} -> {v:g}")
-            r["holds_up"] = holds_up(r, out["current"])
-            out["changes"].append(r)
-    for name, change in EXPERIMENTS.items():
+    tries = [(name, change) for name, change in ABLATIONS.items()]
+    if not ablate_only:
+        tries += [(f"{k} {getattr(base, k):g} -> {v:g}", {k: type(getattr(base, k))(v)})
+                  for k, values in KNOBS.items() for v in values if v != getattr(base, k)]
+        tries += list(EXPERIMENTS.items())
+    for name, change in tries:
         r = run(replace(base, **change).clamped(), name)
         r["holds_up"] = holds_up(r, out["current"])
         out["changes"].append(r)
@@ -136,6 +145,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--wide", action="store_true", help="add today's ~500 most-traded stocks")
     parser.add_argument("--cost-bps", type=float, default=10.0)
     parser.add_argument("--json", help="save the results to this file")
+    parser.add_argument("--ablate", action="store_true",
+                        help="only undo each Nov 6 change on its own (faster)")
     args = parser.parse_args(argv)
 
     from .broker.alpaca_broker import AlpacaBroker
@@ -157,7 +168,7 @@ def main(argv: list[str] | None = None) -> int:
           f"{liquid_enough(history, base):.0%}")
     # The whole list is scanned, as the live bot scans its list plus the market scan.
     base = replace(base, always_watch=tuple(s for s in history if s != "SPY")).clamped()
-    result = compare(history, base, args.cost_bps)
+    result = compare(history, base, args.cost_bps, ablate_only=args.ablate)
     result["stocks"] = len(history)
     print(table(result))
     print(f"Done in {time.time() - started:.0f}s")
