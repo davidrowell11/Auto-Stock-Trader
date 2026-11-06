@@ -11,12 +11,17 @@ your Mac, Windows PC, Android phone or iPhone controls and watches it.
 
 ## What the bot does
 
-* **Finds buys:** strong, steady uptrends among large US stocks plus each
-  day's most active and top-gaining stocks, with extra care for penny stocks.
+* **Finds buys:** strong, steady uptrends among the ~500 most-traded US stocks
+  (refreshed daily) plus each day's most active stocks, with extra care for
+  penny stocks. It skips stocks that just shot up (waiting for a pull-back),
+  buys at most 3 new stocks a day, and sizes each buy so a stop-out costs at
+  most 0.3% of the money.
 * **Checks before buying:** recent headlines (share offerings, investigations,
   bankruptcy and similar red flags block a buy), upcoming earnings, insider and
   Congress buying, and an AI analyst (Claude) that can veto any buy.
-* **Protects what it owns:** trailing safety stops, trend-break sells, daily
+* **Protects what it owns:** trailing safety stops, trend-break sells (on
+  closing prices, so a dip during the day doesn't sell), trims of holdings
+  that grow past 1.5x their size limit, daily
   loss and drawdown limits, a kill switch. It only ever touches stocks it
   bought itself. Stocks that move in step with one it holds share that
   holding's sector limit, and stocks whose prices have stopped updating are

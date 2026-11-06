@@ -11,6 +11,7 @@ Test key can never place a real-money trade:
 from __future__ import annotations
 
 import os
+import threading
 import time as clock
 import uuid
 from collections.abc import Iterable
@@ -27,6 +28,8 @@ LOOKUP_WAITS = (0.0, 1.0, 2.0)  # seconds before each look for an order whose re
 DEAD_ORDER_STATUSES = {"rejected", "canceled", "cancelled", "expired"}
 EXTENDED_START = time(4, 0)  # pre-market opens
 EXTENDED_END = time(20, 0)  # after-hours trading ends
+BAR_CHUNK = 200  # symbols per price request
+RECENT_DAYS = 7  # calendar days re-fetched each check to bring cached prices up to date
 
 
 def _naive_ny(value: datetime) -> datetime:
@@ -59,6 +62,11 @@ class AlpacaBroker(Broker):
         self.data = StockHistoricalDataClient(key, secret)
         self._calendar_day = None
         self._calendar: tuple[datetime, datetime] | None = None
+        # A year of daily prices per stock, fetched once a day; each check then only fetches
+        # the last few days. Scanning hundreds of stocks every few minutes stays quick.
+        self._bars: dict[str, tuple[object, int, list[Bar]]] = {}  # symbol -> (day, depth, bars)
+        self._bars_lock = threading.Lock()
+        self._assets: dict[str, tuple[object, Asset]] = {}  # symbol -> (day, asset)
 
     def get_account(self) -> Account:
         a = self.trading.get_account()
@@ -75,30 +83,48 @@ class AlpacaBroker(Broker):
             for p in self.trading.get_all_positions()
         ]
 
-    def get_daily_bars(self, symbols: Iterable[str], days: int) -> dict[str, list[Bar]]:
+    def _fetch_bars(self, symbols: list[str], start: datetime) -> dict[str, list[Bar]]:
         from alpaca.data.enums import DataFeed
         from alpaca.data.requests import StockBarsRequest
         from alpaca.data.timeframe import TimeFrame
 
-        symbols = list(symbols)
+        out: dict[str, list[Bar]] = {}
+        for i in range(0, len(symbols), BAR_CHUNK):
+            req = StockBarsRequest(
+                symbol_or_symbols=symbols[i:i + BAR_CHUNK],
+                timeframe=TimeFrame.Day,
+                start=start,
+                feed=DataFeed(self.data_feed),
+            )
+            for sym, bars in self.data.get_stock_bars(req).data.items():
+                out[sym] = [Bar(b.timestamp, float(b.open), float(b.high), float(b.low),
+                                float(b.close), float(b.volume)) for b in bars]
+        return out
+
+    def get_daily_bars(self, symbols: Iterable[str], days: int) -> dict[str, list[Bar]]:
+        symbols = sorted(set(symbols))
         if not symbols:
             return {}
-        # Calendar days back, padded for weekends and holidays.
-        start = datetime.now(timezone.utc) - timedelta(days=int(days * 1.5) + 10)
-        req = StockBarsRequest(
-            symbol_or_symbols=symbols,
-            timeframe=TimeFrame.Day,
-            start=start,
-            feed=DataFeed(self.data_feed),
-        )
-        result = self.data.get_stock_bars(req).data
-        return {
-            sym: [
-                Bar(b.timestamp, float(b.open), float(b.high), float(b.low), float(b.close), float(b.volume))
-                for b in bars
-            ][-days:]
-            for sym, bars in result.items()
-        }
+        now = datetime.now(timezone.utc)
+        today = now.astimezone(NEW_YORK).date()
+        with self._bars_lock:
+            current = {s for s in symbols if s in self._bars and self._bars[s][0] == today
+                       and self._bars[s][1] >= days}
+            stale = [s for s in symbols if s not in current]
+            fresh = [s for s in symbols if s in current and self._bars[s][2]]
+            if stale:  # first look today: the full history (calendar days, padded for holidays)
+                got = self._fetch_bars(stale, now - timedelta(days=int(days * 1.5) + 10))
+                for s in stale:  # no prices at all (e.g. delisted): remembered, not asked again today
+                    self._bars[s] = (today, days, got.get(s, []))
+            if fresh:  # already have the history: just the last few days, merged in by date
+                got = self._fetch_bars(fresh, now - timedelta(days=RECENT_DAYS))
+                for s in fresh:
+                    if s in got:
+                        day, depth, old = self._bars[s]
+                        merged = {b.time: b for b in old}
+                        merged.update({b.time: b for b in got[s]})
+                        self._bars[s] = (day, depth, [merged[t] for t in sorted(merged)])
+            return {s: self._bars[s][2][-days:] for s in symbols if self._bars.get(s, (0, 0, []))[2]}
 
     def equity_history(self, days: int) -> list[tuple[datetime, float]]:
         from alpaca.trading.requests import GetPortfolioHistoryRequest
@@ -109,11 +135,17 @@ class AlpacaBroker(Broker):
                 for t, e in zip(h.timestamp or [], h.equity or []) if e]
 
     def get_asset(self, symbol: str) -> Asset:
+        today = datetime.now(NEW_YORK).date()
+        hit = self._assets.get(symbol)
+        if hit and hit[0] == today:  # looked up once a day
+            return hit[1]
         a = self.trading.get_asset(symbol)
         exchange = getattr(a.exchange, "value", str(a.exchange))
-        return Asset(symbol=a.symbol, exchange=exchange, tradable=bool(a.tradable),
-                     fractionable=bool(getattr(a, "fractionable", False)),
-                     name=str(getattr(a, "name", "") or ""))
+        asset = Asset(symbol=a.symbol, exchange=exchange, tradable=bool(a.tradable),
+                      fractionable=bool(getattr(a, "fractionable", False)),
+                      name=str(getattr(a, "name", "") or ""))
+        self._assets[symbol] = (today, asset)
+        return asset
 
     def submit_order(self, order: OrderRequest) -> str:
         """Place an order. Each one carries its own ID, so an order whose reply got lost on the

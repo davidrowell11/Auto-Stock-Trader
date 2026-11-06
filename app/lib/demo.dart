@@ -267,7 +267,7 @@ class DemoApi implements TraderApi {
     weights: [
       (label: 'Insider buying', weight: 1.12),
       (label: "Congress members' buys", weight: 1.0),
-      (label: "Today's most active and top gainers", weight: 0.86),
+      (label: "Today's most active stocks", weight: 0.86),
     ],
   );
   bool _liveApproved = false;

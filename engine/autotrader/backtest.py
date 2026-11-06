@@ -26,13 +26,13 @@ from __future__ import annotations
 import argparse
 import math
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 from .broker.sim import SimBroker
 from .config import Settings, load_settings
 from .engine import HISTORY_DAYS, Engine
 from .journal import Journal
-from .models import Bar
+from .models import Bar, Side
 from .strategy import MIN_HISTORY
 
 
@@ -129,8 +129,14 @@ def run_backtest(history: dict[str, list[Bar]], settings: Settings, cash: float 
     Pass a journal to read the replayed trades afterwards (e.g. which ones lost money).
     """
     broker = ReplayBroker(cash, history, cost_bps)
+    day_start = [0]  # where today's orders begin in broker.orders
+
+    def buys_today() -> int:  # the journal's clock is today's, not the replayed day's
+        return len({o.symbol for o in broker.orders[day_start[0]:] if o.side is Side.BUY})
+
+    today = [None]  # the replayed day, as the bot's clock (cool-offs count replayed days)
     engine = Engine(broker, settings, journal if journal is not None else Journal(),
-                    penny_needs_analyst=False)
+                    penny_needs_analyst=False, buys_today=buys_today, now=lambda: today[0])
     dates = broker.dates
     if len(dates) <= warmup + 1:
         raise ValueError(f"Need more than {warmup + 1} trading days of history, got {len(dates)}")
@@ -138,6 +144,9 @@ def run_backtest(history: dict[str, list[Bar]], settings: Settings, cash: float 
     curve: list[tuple[datetime, float]] = []
     for day in dates[warmup:]:
         broker.advance_to(day)
+        day_start[0] = len(broker.orders)
+        # Late evening of that day: its prices are final.
+        today[0] = (day if day.tzinfo else day.replace(tzinfo=timezone.utc)) + timedelta(hours=23)
         engine.run_cycle()
         curve.append((day, broker.get_account().equity))
 

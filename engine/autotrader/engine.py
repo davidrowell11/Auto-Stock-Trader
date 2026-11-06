@@ -17,7 +17,7 @@ from . import indicators as ind
 from .analyst import AnalystUnavailable, AnalystView
 from .broker.base import Broker
 from .config import HARD_LIMITS, Mode, Settings
-from .journal import Journal, StopState
+from .journal import TRIM, Journal, StopState
 from .learning import Memory
 from .market import MARKET, Mood, market_mood
 from .models import Bar, OrderRequest, Position, Side, Signal
@@ -39,6 +39,10 @@ EXTENDED_SESSIONS = {"pre", "after"}  # 4am-9:30am and 4pm-8pm New York time
 EXTENDED_BUY_CUSHION = 0.005  # outside regular hours, pay at most 0.5% over the last trade
 STALE_AFTER = timedelta(days=3)  # behind the market's latest day by more than a weekend
 EXTENDED_SELL_CUSHION = 0.02  # ...and accept down to 2% under it to get out
+# Safety checks (broker lookup, news, earnings) for at most this many of the best-scoring stocks
+# per check, so scanning hundreds of stocks doesn't mean hundreds of lookups every few minutes.
+MAX_SAFETY_CHECKS = 60
+ENOUGH_CANDIDATES = 15  # stop checking once this many stocks have passed every check
 
 
 def limit_for(side: Side, price: float, extended: bool, is_penny: bool) -> float | None:
@@ -81,6 +85,7 @@ class CycleReport:
     mood: str | None = None
     mood_level: str | None = None
     checked: int = 0  # stocks looked at for buys
+    paced: str | None = None  # e.g. "bought 3 new stocks today, the daily limit"
 
     def summary(self) -> str:
         """One line for the app, e.g. "Checked 52 stocks: bought MSFT"."""
@@ -95,6 +100,9 @@ class CycleReport:
             did.append("stopped partway through")
         if self.halted:
             did.append(f"no new buys ({self.halted})")
+            head = "Checked the stocks it owns"
+        elif self.paced:
+            did.append(f"no more buys today ({self.paced})")
             head = "Checked the stocks it owns"
         else:
             head = f"Checked {self.checked} stocks"
@@ -114,7 +122,10 @@ class Engine:
                  session: str = "regular",
                  screener: Callable[[], list[str]] | None = None,
                  news: Callable[[str], "NewsCheck"] | None = None,
-                 memory: Callable[[], Memory] | None = None) -> None:
+                 memory: Callable[[], Memory] | None = None,
+                 market_scan: Callable[[], list[str]] | None = None,
+                 now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+                 buys_today: Callable[[], int] | None = None) -> None:
         self.broker = broker
         self.s = settings
         self.journal = journal
@@ -137,7 +148,7 @@ class Engine:
         self.progress = progress
         # "regular", or "pre"/"after" for pre-market and after-hours trading (limit orders only).
         self.session = session
-        # Live data: today's most-active and top-gaining stocks to scan too, and recent headlines.
+        # Live data: today's most-active stocks to scan too, and recent headlines.
         self.screener = screener
         self.news = news
         self.news_seen: dict[str, NewsCheck] = {}
@@ -145,6 +156,10 @@ class Engine:
         # What the bot learned from its own trades (see learning.py); read once per cycle.
         self.memory_fn = memory
         self.memory = Memory()
+        # The most-traded US stocks (a few hundred), refreshed daily; scanned like the fixed list.
+        self.market_scan = market_scan
+        self.now = now
+        self.buys_today = buys_today  # backtests count the replayed day's buys themselves
 
     @property
     def extended(self) -> bool:
@@ -252,12 +267,24 @@ class Engine:
             except Exception as exc:  # trade on without it
                 log.warning("Couldn't read what the bot learned: %s", exc)
         universe = build_universe(self.s.always_watch, self.s.never_buy)
+        never = {n.upper() for n in self.s.never_buy}
+        if self.market_scan is not None:
+            try:
+                scanned = self.market_scan()
+            except Exception as exc:  # trade the fixed list without it
+                log.warning("Market scan unavailable: %s", exc)
+                scanned = []
+            have = set(universe)
+            extra = [s for s in scanned if s not in have and s not in never]
+            if extra:
+                self.progress(f"Adding {len(extra)} more of the most-traded US stocks")
+                universe = [*universe, *extra]
         if self.screener is not None:
-            extra = [s for s in self.screener() if s not in universe
-                     and s not in {n.upper() for n in self.s.never_buy}]
+            have = set(universe)
+            extra = [s for s in self.screener() if s not in have and s not in never]
             self.screened = set(extra)
             if extra:
-                self.progress(f"Adding {len(extra)} of today's most active and top-gaining stocks")
+                self.progress(f"Adding {len(extra)} of today's most active stocks")
                 universe = [*universe, *extra]
         symbols = sorted(set(universe) | {p.symbol for p in positions} | {MARKET})
         self.progress(f"Getting prices for {len(symbols)} stocks")
@@ -273,6 +300,8 @@ class Engine:
 
         risk = RiskManager(self.s, account, kept, self.journal.peak_equity(self.mode),
                            mood_multiplier=self.mood.size_multiplier)
+        if not self.extended:  # trims aren't urgent: they wait for regular hours and market orders
+            self._trim_oversized(risk, report)
         report.halted = (self.pause_buying or risk.buying_halted()
                          or (self.mood.note if self.mood.blocks_buying else None))
         if not report.halted and self.extended and not self.s.after_hours_buys:
@@ -281,8 +310,26 @@ class Engine:
             log.warning("No new buys: %s", report.halted)
             self.progress(f"Not buying right now: {report.halted}")
             return report
-        self._scan_for_buys(universe, bars, risk, report)
+        left = self.buys_left_today()
+        if left <= 0:
+            n = self.s.max_new_buys_per_day
+            report.paced = f"bought {n} new stock{'' if n == 1 else 's'} today, the daily limit"
+            self.progress(f"No more buys today: {report.paced}")
+            return report
+        self._scan_for_buys(universe, bars, risk, report, left)
         return report
+
+    def buys_left_today(self) -> int:
+        """New stocks the bot may still buy (or suggest, in approve mode) today, New York time."""
+        if self.buys_today is not None:
+            done = self.buys_today()
+        else:
+            here = self.now().astimezone(strategy.NEW_YORK)
+            midnight = here.replace(hour=0, minute=0, second=0, microsecond=0)
+            done = self.journal.buys_since(self.mode, midnight)
+        if self.needs_approval:
+            done += sum(1 for a in self.journal.pending_approvals(self.mode) if a.get("side") == "buy")
+        return self.s.max_new_buys_per_day - done
 
     # ----- keeping an eye on bought stocks -----
     def _monitor_positions(self, positions: list[Position], bars: dict[str, list[Bar]],
@@ -310,7 +357,9 @@ class Engine:
 
             self.progress(f"Checking {p.symbol}: price ${p.current_price:,.2f}, "
                           f"safety stop ${state.stop_price:,.2f}")
-            reason = strategy.exit_reason(history, state.stop_price) if history else None
+            closed = strategy.finished_days(history, self.now()) if history else history
+            reason = (strategy.exit_reason(history, state.stop_price, closed, self.s.trend_exit_days)
+                      if history else None)
             if reason is None and p.current_price <= state.stop_price:
                 reason = f"Hit stop at ${state.stop_price:.2f}"
             if reason is None and penny.is_penny(p.current_price, self.s) and penny.volume_drying_up(history):
@@ -319,11 +368,40 @@ class Engine:
                 kept.append(p)  # still held, so it still counts against the limits
         return kept
 
-    def _sell(self, p: Position, reason: str, report: CycleReport) -> bool:
+    def _trim_oversized(self, risk: RiskManager, report: CycleReport) -> None:
+        """Sell part of any holding that has grown well past its size limit, back to the limit.
+
+        One stock that doubled can end up a big share of the money, so a single bad day in it
+        hurts the whole account. Trims don't wait for approval (they lower risk, like a stop).
+        """
+        cap = risk.capital
+        for i, p in enumerate(list(risk.positions)):
+            if p.symbol in self.working or p.qty <= DUST or p.current_price <= 0 or cap <= 0:
+                continue
+            is_penny = penny.is_penny(p.current_price, self.s)
+            pct = self.s.penny_max_position_pct if is_penny else self.s.max_position_pct
+            limit = cap * pct
+            if p.market_value <= limit * self.s.trim_over:
+                continue
+            excess = (p.market_value - limit) / p.current_price
+            whole = abs(p.qty - round(p.qty)) < DUST
+            qty = float(int(excess)) if whole else int(excess * 1000) / 1000
+            qty = min(qty, p.qty)
+            if qty <= DUST or qty * p.current_price < risk.MIN_FRACTIONAL_DOLLARS:
+                continue
+            share = p.market_value / cap
+            reason = (f"{TRIM} {qty:g} shares: it grew to {share:.0%} of the money, over its "
+                      f"{pct:.0%} limit")
+            if self._sell(p, reason, report, qty=qty):
+                risk.positions[i] = replace(p, qty=p.qty - qty)
+
+    def _sell(self, p: Position, reason: str, report: CycleReport,
+              qty: float | None = None) -> bool:
         # Protective sells never wait for approval: getting out fast is the point.
+        qty = p.qty if qty is None else qty
         limit = limit_for(Side.SELL, p.current_price, self.extended,
                           penny.is_penny(p.current_price, self.s))
-        order = OrderRequest(p.symbol, Side.SELL, p.qty, limit, reason, self.extended)
+        order = OrderRequest(p.symbol, Side.SELL, qty, limit, reason, self.extended)
         if not self.keep_going():
             return False
         self.progress(f"Selling {p.symbol}: {reason}")
@@ -333,22 +411,23 @@ class Engine:
             log.error("Sell %s failed: %s", p.symbol, exc)
             report.skipped.append(f"{p.symbol}: sell failed ({exc})")
             return False
-        self.journal.record_trade(self.mode, p.symbol, "sell", p.qty, p.current_price,
-                                  order_id, [reason])
+        self.journal.record_trade(self.mode, p.symbol, "sell", qty, p.current_price,
+                                  order_id, [reason], when=self.now())
         state = self.journal.get_stop(self.mode, p.symbol)
         state.qty = p.qty if state.qty is None else state.qty
         self.order_placed(p.symbol, state, "sell", order_id)
         report.sells.append(f"{p.symbol}: {reason}")
-        self.journal.add_event(self.mode, "sell", f"Sold {p.qty:g} {p.symbol}: {reason}")
-        log.info("SELL %s x%s: %s", p.symbol, p.qty, reason)
+        self.journal.add_event(self.mode, "sell", f"Sold {qty:g} {p.symbol}: {reason}")
+        log.info("SELL %s x%s: %s", p.symbol, qty, reason)
         return True
 
     # ----- finding new buys -----
     def _scan_for_buys(self, universe: list[str], bars: dict[str, list[Bar]],
-                       risk: RiskManager, report: CycleReport) -> None:
+                       risk: RiskManager, report: CycleReport, left: int | None = None) -> None:
+        left = self.s.max_new_buys_per_day if left is None else left
         held = {p.symbol for p in risk.positions} | self.journal.owned_symbols(self.mode)
         self.progress(f"Looking for buys among {len(universe)} stocks")
-        candidates: list[Signal] = []
+        trending: list[tuple[Signal, list[Bar]]] = []
         market = bars.get(MARKET)
         latest_day = market[-1].time if market else None
         for symbol in universe:
@@ -374,9 +453,24 @@ class Engine:
                 report.skipped.append(f"{symbol}: trend score {sig.score:.2f} is under the "
                                       f"{self.s.min_score:.2f} minimum")
                 continue
+            stretch = strategy.stretched(history, sig.atr, self.s.stretch_limit)
+            if stretch:
+                report.skipped.append(f"{symbol}: {stretch}")
+                continue
             if symbol in self.screened:
                 sig.sources.append("screener")
                 sig.score = round(min(1.0, sig.score * self.memory.weight("screener")), 4)
+            trending.append((sig, history))
+
+        # Best first; the slower safety checks (broker, news, earnings) only for the top ones.
+        trending.sort(key=lambda t: t[0].score, reverse=True)
+        if len(trending) > ENOUGH_CANDIDATES:
+            self.progress(f"{len(trending)} stocks are in uptrends; safety-checking the best ones")
+        candidates: list[Signal] = []
+        for sig, history in trending[:MAX_SAFETY_CHECKS]:
+            if len(candidates) >= ENOUGH_CANDIDATES:
+                break
+            symbol = sig.symbol
             try:
                 problems = self._buy_problems(sig, history)
             except Exception as exc:  # one bad symbol must not stop the whole scan
@@ -419,6 +513,11 @@ class Engine:
             if not self.keep_going():
                 report.skipped.append("bot stopped mid-cycle")
                 return
+            if left <= 0:
+                # Spread buys over days instead of putting the budget on one day's prices.
+                report.skipped.append(f"{sig.symbol}: waiting, it already bought "
+                                      f"{self.s.max_new_buys_per_day} new stocks today")
+                continue
             is_penny = penny.is_penny(sig.price, self.s)
             if is_penny and self.extended:
                 report.skipped.append(f"{sig.symbol}: penny stocks are only bought in regular hours")
@@ -428,7 +527,9 @@ class Engine:
             # Whole shares outside regular hours, where fractional orders aren't always accepted.
             fractional = (bool(getattr(asset, "fractionable", False)) and not is_penny
                           and not self.extended)
-            size = risk.size_buy(sig.symbol, sig.price, sector, is_penny, fractional, bars)
+            stop = strategy.initial_stop(sig.price, sig.atr, strategy.stop_multiple(sig.price, self.s))
+            size = risk.size_buy(sig.symbol, sig.price, sector, is_penny, fractional, bars,
+                                 stop_price=stop)
             twin_note = size.twin
             if size.qty <= 0:
                 report.skipped.append(f"{sig.symbol}: {size.note}"
@@ -462,6 +563,7 @@ class Engine:
                 self.journal.queue_approval(self.mode, sig.symbol, "buy", size.qty, limit, reasons,
                                            sources)
                 risk.register_buy(sig.symbol, size.qty, sig.price, sector)
+                left -= 1
                 report.queued.append(f"{sig.symbol} x{size.qty:g}")
                 self.progress(f"Asking you to approve buying {size.qty:g} {sig.symbol}")
                 self.journal.add_event(self.mode, "approval",
@@ -479,9 +581,9 @@ class Engine:
                 report.skipped.append(f"{sig.symbol}: buy failed ({exc})")
                 continue
             risk.register_buy(sig.symbol, size.qty, sig.price, sector)
+            left -= 1
             self.journal.record_trade(self.mode, sig.symbol, "buy", size.qty, sig.price,
-                                      order_id, reasons, sources)
-            stop = strategy.initial_stop(sig.price, sig.atr, strategy.stop_multiple(sig.price, self.s))
+                                      order_id, reasons, sources, when=self.now())
             self.order_placed(sig.symbol, StopState(sig.price, stop, sig.price, qty=size.qty), "buy", order_id)
             report.buys.append(f"{sig.symbol} x{size.qty:g} @ ${sig.price:.2f}")
             self.journal.add_event(self.mode, "buy", f"Bought {size.qty:g} {sig.symbol} at about ${sig.price:.2f}")
@@ -572,7 +674,7 @@ class Engine:
             return ["penny stocks are only bought in regular hours"]
         sold = self.journal.last_protective_sell(self.mode, sig.symbol)
         cooloff = timedelta(days=HARD_LIMITS.stop_out_cooloff_days)
-        if sold is not None and datetime.now(timezone.utc) - sold < cooloff:
+        if sold is not None and self.now() - sold < cooloff:
             back = sold + cooloff
             until = f"{back:%b} {back.day}"
             return [f"cooling off after it was sold to protect you (can buy again from {until})"]
