@@ -50,7 +50,7 @@ MAX_EXTRA_DROP = 0.01
 KNOBS: dict[str, tuple[float, ...]] = {
     "atr_stop_multiple": (1.5, 2.0, 2.5, 3.0),
     "min_score": (0.0, 0.2, 0.35, 0.5),
-    "stretch_limit": (2.0, 3.0, 4.0),
+    "stretch_limit": (0.0, 2.0, 3.0, 4.0),
     "max_new_buys_per_day": (2.0, 3.0, 5.0),
 }
 KNOB_LABELS = {"atr_stop_multiple": "Safety stop distance (x average daily move)",

@@ -13,8 +13,7 @@ your Mac, Windows PC, Android phone or iPhone controls and watches it.
 
 * **Finds buys:** strong, steady uptrends among the ~500 most-traded US stocks
   (refreshed daily) plus each day's most active stocks, with extra care for
-  penny stocks. It skips stocks that just shot up (waiting for a pull-back),
-  buys at most 3 new stocks a day, and sizes each buy so a stop-out costs at
+  penny stocks. It buys at most 3 new stocks a day, and sizes each buy so a stop-out costs at
   most 0.3% of the money.
 * **Checks before buying:** recent headlines (share offerings, investigations,
   bankruptcy and similar red flags block a buy), upcoming earnings, insider and

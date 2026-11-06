@@ -72,7 +72,7 @@ class StretchTests(unittest.TestCase):
         bars = make_bars(closes)
         sig = strategy.score_trend("X", bars)
         self.assertIn("up too far too fast", strategy.stretched(bars, sig.atr))
-        eng, broker = engine_with({"X": bars}, always_watch=("X",))
+        eng, broker = engine_with({"X": bars}, always_watch=("X",), stretch_limit=3.0)
         report = eng.run_cycle()
         self.assertEqual(broker.orders, [])
         self.assertTrue(any("pull-back" in s for s in report.skipped))
@@ -307,8 +307,10 @@ class CompareTests(unittest.TestCase):
         result = compare(history, base)
         self.assertEqual(result["old"]["name"], "Rules before Nov 6")
         self.assertTrue(all("holds_up" in c for c in result["changes"]))
-        from autotrader.compare import EXPERIMENTS
-        self.assertEqual(len(result["changes"]), 3 + 3 + 2 + 2 + len(EXPERIMENTS))
+        from autotrader.compare import ABLATIONS, EXPERIMENTS
+        self.assertEqual(len(result["changes"]), len(ABLATIONS) + 3 + 3 + 3 + 2 + len(EXPERIMENTS))
+        only = compare(history, base, ablate_only=True)
+        self.assertEqual([c["name"] for c in only["changes"]], list(ABLATIONS))
         self.assertIn("Current rules", table(result))
 
 
