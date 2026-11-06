@@ -4,17 +4,26 @@ Buy stocks in strong, steady uptrends (price above the 50-day average, which
 is above the 200-day average, near their 1-year high, with positive 3- and
 6-month momentum). Sell when the trend breaks (close below the 50-day
 average) or a trailing stop is hit.
+
+The trend-break sell looks only at finished days: a stock that dips under its
+50-day average for an hour and recovers by the close is still in its uptrend.
+Stops act on the live price.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
+from datetime import datetime, time
+from zoneinfo import ZoneInfo
 
 from . import indicators as ind
 from .config import HARD_LIMITS, Settings
 from .models import Bar, Signal
 
 MIN_HISTORY = 252  # about one year of trading days
+STRETCH_LIMIT = 3.0  # this many average daily moves above the 20-day average: too far, too fast
+NEW_YORK = ZoneInfo("America/New_York")
+MARKET_CLOSE = time(16, 0)
 
 
 def score_trend(symbol: str, bars: Sequence[Bar]) -> Signal | None:
@@ -65,16 +74,50 @@ def trail_stop(
     return max(current_stop, highest_close - multiple * atr)
 
 
-def exit_reason(bars: Sequence[Bar], stop_price: float) -> str | None:
-    """Why the bot should sell now, or None to keep holding."""
+def stretched(bars: Sequence[Bar], atr: float) -> str | None:
+    """Why a stock has run up too far to buy right now (it tends to fall back), or None."""
+    closes = [b.close for b in bars]
+    sma20 = ind.sma(closes, 20)
+    if sma20 is None or not atr or atr <= 0:
+        return None
+    gap = (closes[-1] - sma20) / atr
+    if gap > STRETCH_LIMIT:
+        return (f"up too far too fast ({gap:.1f} average daily moves above its 20-day average); "
+                "waiting for a pull-back")
+    return None
+
+
+def finished_days(bars: Sequence[Bar], now: datetime) -> Sequence[Bar]:
+    """The bars for days that have closed: today's is left out until 4pm New York time."""
+    if not bars:
+        return bars
+    last = bars[-1].time
+    last_day = (last.astimezone(NEW_YORK) if last.tzinfo else last).date()
+    here = now.astimezone(NEW_YORK) if now.tzinfo else now
+    if last_day == here.date() and here.time() < MARKET_CLOSE:
+        return bars[:-1]
+    return bars
+
+
+def exit_reason(bars: Sequence[Bar], stop_price: float,
+                closed: Sequence[Bar] | None = None) -> str | None:
+    """Why the bot should sell now, or None to keep holding.
+
+    ``closed`` is the history up to the last finished day (``finished_days``); the trend
+    check uses it, so a dip during the day doesn't sell. Without it, every bar counts.
+    """
     if not bars:
         return None
     price = bars[-1].close
     if price <= stop_price:
         return f"Hit stop at ${stop_price:.2f} (price ${price:.2f})"
-    sma50 = ind.sma([b.close for b in bars], 50)
-    if sma50 is not None and price < sma50:
-        return f"Trend broke: price ${price:.2f} fell below its 50-day average ${sma50:.2f}"
+    closed = bars if closed is None else closed
+    if not closed:
+        return None
+    close = closed[-1].close
+    sma50 = ind.sma([b.close for b in closed], 50)
+    if sma50 is not None and close < sma50:
+        return f"Trend broke: closed at ${close:.2f}, below its 50-day average ${sma50:.2f}"
     return None
 
 

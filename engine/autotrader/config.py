@@ -47,6 +47,8 @@ class HardLimits:
     live_auto_stop_drawdown: float = 0.10  # Live stops itself after losing this much of its money
     live_auto_stop_errors: int = 3  # ...or after this many failed cycles in a row
     stop_out_cooloff_days: int = 7  # after a protective sell, don't rebuy that stock for a week
+    max_new_buys_per_day: int = 6  # never more new stocks than this in one day
+    max_risk_per_trade_pct: float = 0.005  # most of the money one trade may lose if its stop is hit
     # Things the bot may never do
     allow_otc: bool = False
     allow_options: bool = False
@@ -82,6 +84,15 @@ class Settings:
     analyst_min_confidence: float = 0.60
     penny_analyst_min_confidence: float = 0.75
     max_analyst_reviews: int = 5  # per cycle, to keep API costs down
+    # Pace: new stocks bought per day. Buying 11 in an hour put the whole budget on one day's prices.
+    max_new_buys_per_day: int = 3
+    # Size by risk: a buy is sized so hitting its stop loses at most this share of the money,
+    # so jumpy stocks (wide stops) get smaller positions than steady ones.
+    risk_per_trade_pct: float = 0.003
+    # Skip a buy when there's only room for less than this share of a normal position.
+    min_position_fraction: float = 0.4
+    # Trim a holding that has grown past this many times its size limit, back down to the limit.
+    trim_over: float = 1.5
     # Lowest trend score worth buying (the strategy lab can raise it; 0 means any uptrend).
     min_score: float = 0.0
     max_signal_lookups: int = 10  # stocks per cycle checked for insider/Congress buying
@@ -105,6 +116,10 @@ class Settings:
             self,
             max_position_pct=min(self.max_position_pct, h.max_position_pct),
             max_open_positions=min(self.max_open_positions, h.max_open_positions),
+            max_new_buys_per_day=max(0, min(self.max_new_buys_per_day, h.max_new_buys_per_day)),
+            risk_per_trade_pct=min(self.risk_per_trade_pct, h.max_risk_per_trade_pct),
+            min_position_fraction=min(1.0, max(0.0, self.min_position_fraction)),
+            trim_over=max(1.1, self.trim_over),
             daily_loss_pct=min(self.daily_loss_pct, h.max_daily_loss_pct),
             pause_drawdown_pct=min(self.pause_drawdown_pct, h.pause_drawdown_pct),
             drawdown_brake_pct=min(self.drawdown_brake_pct, h.pause_drawdown_pct),

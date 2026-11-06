@@ -56,6 +56,9 @@ CREATE TABLE IF NOT EXISTS memory (
 """
 
 
+TRIM = "Trimmed"  # the first word of a trim's reason: a partial sale, not a protective one
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -121,11 +124,19 @@ class Journal:
         """When the bot last sold this stock to protect you (stop, trend break). Kill-switch sells don't count."""
         cur = self.db.execute(
             "SELECT ts FROM trades WHERE mode = ? AND symbol = ? AND side = 'sell'"
-            " AND reasons != ? ORDER BY id DESC LIMIT 1",
-            (mode, symbol, json.dumps(["Kill switch"])),
+            " AND reasons != ? AND reasons NOT LIKE ? ORDER BY id DESC LIMIT 1",
+            (mode, symbol, json.dumps(["Kill switch"]), json.dumps([TRIM])[:-2] + "%"),
         )
         row = cur.fetchone()
         return datetime.fromisoformat(row[0]) if row else None
+
+    def buys_since(self, mode: str, since: datetime) -> int:
+        """How many different stocks the bot has bought since a time."""
+        row = self.db.execute(
+            "SELECT COUNT(DISTINCT symbol) FROM trades WHERE mode = ? AND side = 'buy' AND ts >= ?",
+            (mode, since.astimezone(timezone.utc).isoformat(timespec="seconds")),
+        ).fetchone()
+        return int(row[0] or 0)
 
     def trades(self, mode: str) -> list[dict]:
         cur = self.db.execute(

@@ -1008,7 +1008,8 @@ def main() -> None:
 
     from .backup import from_environment
     from .broker.alpaca_broker import AlpacaBroker
-    from .signals import EarningsCalendar, NewsDesk, QuiverClient, Screener, SecClient, SignalBook
+    from .signals import (EarningsCalendar, MarketScan, NewsDesk, QuiverClient, Screener, SecClient,
+                          SignalBook)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     token = os.environ.get("AUTOTRADER_APP_TOKEN", "")
@@ -1048,6 +1049,8 @@ def main() -> None:
     sec = SecClient()
     earnings = EarningsCalendar()
     screener = Screener() if os.environ.get("AUTOTRADER_SCREENER", "true").lower() != "false" else None
+    market_scan = (MarketScan() if os.environ.get("AUTOTRADER_MARKET_SCAN", "true").lower() != "false"
+                   else None)
     news = NewsDesk()
     skip_results = os.environ.get("AUTOTRADER_SKIP_READINESS", "").lower() == "true"
     runners = {}
@@ -1061,6 +1064,7 @@ def main() -> None:
             "analyst": analyst,
             "earnings": earnings.reports_soon,
             "screener": screener.symbols if screener else None,
+            "market_scan": market_scan.symbols if market_scan else None,
             "news": news.check,
             "memory": (lambda m=mode.value: learner.memory(m)),
         }

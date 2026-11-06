@@ -38,7 +38,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 
 from . import scorecard
-from .journal import Journal
+from .journal import TRIM, Journal
 
 log = logging.getLogger("autotrader.learning")
 
@@ -56,7 +56,7 @@ RECENCY_PENALTY = 0.3  # a year-old case counts as this much less alike (markets
 
 # Sources whose weight the bot adjusts, and how each appears in the app.
 WEIGHTED = {"insider": "Insider buying", "congress": "Congress members' buys",
-            "screener": "Today's most active and top gainers"}
+            "screener": "Today's most active stocks"}
 LABELS = {"trend": "Trend rules", **WEIGHTED, "analyst": "AI analyst approval",
           "penny": "Penny stocks", "after_hours": "Bought outside regular hours"}
 NOT_THE_BOTS_CALL = {"Kill switch"}  # sells you asked for don't count as the bot's results
@@ -161,10 +161,12 @@ def outcomes(journal: Journal, mode: str) -> list[Outcome]:
         if t["side"] == "buy":
             open_buys[t["symbol"]] = t  # the latest buy (an unfilled one is placed again)
             continue
+        reason = t["reasons"][0] if t["reasons"] else ""
+        if reason.startswith(TRIM):
+            continue  # a trim sells part of it; the trade isn't finished yet
         buy = open_buys.pop(t["symbol"], None)
         if buy is None:
             continue  # a re-priced sell, or a stock bought before the bot kept records
-        reason = t["reasons"][0] if t["reasons"] else ""
         if reason in NOT_THE_BOTS_CALL:
             continue
         out.append(Outcome(mode, t["symbol"], buy["ts"], t["ts"], float(buy["price"]),

@@ -34,7 +34,9 @@ class CorrelationTests(unittest.TestCase):
         self.assertEqual([o.symbol for o in broker.orders], ["AAPL"])
 
         broker.bars["TWIN"] = make_bars(twin)
-        eng.s = Settings(max_sector_pct=0.03, always_watch=("TWIN",)).clamped()
+        # (No minimum size here: the twin's leftover room is small on purpose.)
+        eng.s = Settings(max_sector_pct=0.03, always_watch=("TWIN",),
+                         min_position_fraction=0).clamped()
         report = eng.run_cycle()
         self.assertEqual([o.symbol for o in broker.orders], ["AAPL", "TWIN"])
         buy = eng.journal.trades("test")[-1]

@@ -112,9 +112,19 @@ class RiskManager:
     # ----- position sizing -----
     MIN_FRACTIONAL_DOLLARS = 1.0  # Alpaca's smallest fractional order
 
+    def normal_position(self, penny: bool = False) -> float:
+        """Dollars in a full-size position right now."""
+        pct = self.s.penny_max_position_pct if penny else self.s.max_position_pct
+        return self.capital * pct * self.size_multiplier
+
     def size_buy(self, symbol: str, price: float, sector: str, penny: bool,
-                 fractional: bool = False, bars: dict | None = None) -> SizeDecision:
-        """How much to buy. Fractional shares let a small budget hold pricey stocks."""
+                 fractional: bool = False, bars: dict | None = None,
+                 stop_price: float | None = None) -> SizeDecision:
+        """How much to buy. Fractional shares let a small budget hold pricey stocks.
+
+        With ``stop_price``, the buy is also sized so that hitting the stop loses at most
+        ``risk_per_trade_pct`` of the money: a stock with a wide stop gets a smaller position.
+        """
         if price <= 0:
             return SizeDecision(0, "No valid price")
         if any(p.symbol == symbol for p in self.positions):
@@ -126,9 +136,9 @@ class RiskManager:
             return SizeDecision(0, halted)
 
         cap = self.capital
-        pct = self.s.penny_max_position_pct if penny else self.s.max_position_pct
+        normal = self.normal_position(penny)
         limits = {
-            "position size": cap * pct * self.size_multiplier,
+            "position size": normal,
             "cash (after reserve)": min(self.account.cash, cap - self.invested)
             - cap * self.s.cash_reserve_pct,
             "sector limit": cap * self.s.max_sector_pct
@@ -144,6 +154,10 @@ class RiskManager:
                 p.market_value for p in self.positions if p.sector == twin.sector)
             twin_note = (f"Moves closely with {twin.symbol} ({corr:.2f} correlation), so it also "
                          f"counts toward {twin.symbol}'s {twin.sector} limit")
+        if stop_price is not None and 0 < stop_price < price and self.s.risk_per_trade_pct > 0:
+            distance = (price - stop_price) / price
+            limits["risk per trade"] = (cap * self.s.risk_per_trade_pct / distance
+                                        * self.size_multiplier)
         if penny:
             penny_value = sum(
                 p.market_value for p in self.positions if p.current_price < self.s.penny_price
@@ -152,6 +166,12 @@ class RiskManager:
 
         binding = min(limits, key=limits.get)
         dollars = limits[binding]
+        if binding not in ("position size", "risk per trade") and dollars < normal * self.s.min_position_fraction:
+            # A crumb (e.g. $10 of a stock) adds trading costs and attention without moving the
+            # account; better to keep the room for a full-size buy.
+            room = max(0.0, dollars)
+            return SizeDecision(0, f"Only ${room:,.0f} of room under the {binding}, too small "
+                                   f"next to a normal ${normal:,.0f} position", twin_note)
         if fractional and not penny:
             qty = math.floor(dollars / price * 1000) / 1000 if dollars > 0 else 0
             if qty * price < self.MIN_FRACTIONAL_DOLLARS:
