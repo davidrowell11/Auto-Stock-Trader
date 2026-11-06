@@ -58,6 +58,7 @@ class SecClient:
         self._ciks: dict[str, int] | None = None
         self._ciks_at = 0.0
         self._filings: dict[str, tuple[float, list[Filing]]] = {}
+        self._sic: dict[str, int | None] = {}
 
     # The server runs for weeks, so cached filings are refreshed regularly.
     FILINGS_TTL = 6 * 3600
@@ -72,6 +73,18 @@ class SecClient:
             self._ciks = {row["ticker"].upper(): int(row["cik_str"]) for row in data.values()}
             self._ciks_at = time.monotonic()
         return self._ciks.get(symbol.upper().replace(".", "-"))
+
+    def sic(self, symbol: str) -> int | None:
+        """The company's SIC industry code from its SEC filings, or None (e.g. most funds).
+        A company's industry doesn't change, so this is looked up once."""
+        if symbol not in self._sic:
+            cik = self.cik(symbol)
+            code = None
+            if cik is not None:
+                raw = self.fetch.json(SUBMISSIONS_URL.format(cik=cik), self.headers).get("sic")
+                code = int(raw) if str(raw or "").isdigit() and int(raw) > 0 else None
+            self._sic[symbol] = code
+        return self._sic[symbol]
 
     def filings(self, symbol: str) -> list[Filing]:
         """Recent filings for a company, newest first (cached for a few hours)."""

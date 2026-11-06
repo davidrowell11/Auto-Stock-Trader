@@ -124,8 +124,7 @@ class Engine:
                  news: Callable[[str], "NewsCheck"] | None = None,
                  memory: Callable[[], Memory] | None = None,
                  market_scan: Callable[[], list[str]] | None = None,
-                 now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
-                 buys_today: Callable[[], int] | None = None) -> None:
+                 now: Callable[[], datetime] = lambda: datetime.now(timezone.utc)) -> None:
         self.broker = broker
         self.s = settings
         self.journal = journal
@@ -159,7 +158,6 @@ class Engine:
         # The most-traded US stocks (a few hundred), refreshed daily; scanned like the fixed list.
         self.market_scan = market_scan
         self.now = now
-        self.buys_today = buys_today  # backtests count the replayed day's buys themselves
 
     @property
     def extended(self) -> bool:
@@ -321,15 +319,18 @@ class Engine:
 
     def buys_left_today(self) -> int:
         """New stocks the bot may still buy (or suggest, in approve mode) today, New York time."""
-        if self.buys_today is not None:
-            done = self.buys_today()
-        else:
-            here = self.now().astimezone(strategy.NEW_YORK)
-            midnight = here.replace(hour=0, minute=0, second=0, microsecond=0)
-            done = self.journal.buys_since(self.mode, midnight)
+        return self.s.max_new_buys_per_day - len(self.bought_today())
+
+    def bought_today(self) -> list[str]:
+        """Stocks bought (or, in approve mode, suggested) since midnight New York time.
+        A backtest's clock is the day it's replaying, so this works there too."""
+        here = self.now().astimezone(strategy.NEW_YORK)
+        midnight = here.replace(hour=0, minute=0, second=0, microsecond=0)
+        done = sorted(self.journal.bought_since(self.mode, midnight))
         if self.needs_approval:
-            done += sum(1 for a in self.journal.pending_approvals(self.mode) if a.get("side") == "buy")
-        return self.s.max_new_buys_per_day - done
+            done += [a["symbol"] for a in self.journal.pending_approvals(self.mode)
+                     if a.get("side") == "buy"]
+        return done
 
     # ----- keeping an eye on bought stocks -----
     def _monitor_positions(self, positions: list[Position], bars: dict[str, list[Bar]],
@@ -425,6 +426,11 @@ class Engine:
     def _scan_for_buys(self, universe: list[str], bars: dict[str, list[Bar]],
                        risk: RiskManager, report: CycleReport, left: int | None = None) -> None:
         left = self.s.max_new_buys_per_day if left is None else left
+        # New buys per sector today (the bot learned that two oil stocks bought on the same
+        # day fell together).
+        sector_buys: dict[str, int] = {}
+        for s in self.bought_today():
+            sector_buys[sector_of(s)] = sector_buys.get(sector_of(s), 0) + 1
         held = {p.symbol for p in risk.positions} | self.journal.owned_symbols(self.mode)
         self.progress(f"Looking for buys among {len(universe)} stocks")
         trending: list[tuple[Signal, list[Bar]]] = []
@@ -523,6 +529,10 @@ class Engine:
                 report.skipped.append(f"{sig.symbol}: penny stocks are only bought in regular hours")
                 continue
             sector = sector_of(sig.symbol)
+            per_sector = self.s.max_buys_per_sector_per_day
+            if per_sector and sector_buys.get(sector, 0) >= per_sector:
+                report.skipped.append(f"{sig.symbol}: it already bought a stock in the {sector} sector today")
+                continue
             asset = self.assets.get(sig.symbol)
             # Whole shares outside regular hours, where fractional orders aren't always accepted.
             fractional = (bool(getattr(asset, "fractionable", False)) and not is_penny
@@ -564,6 +574,7 @@ class Engine:
                                            sources)
                 risk.register_buy(sig.symbol, size.qty, sig.price, sector)
                 left -= 1
+                sector_buys[sector] = sector_buys.get(sector, 0) + 1
                 report.queued.append(f"{sig.symbol} x{size.qty:g}")
                 self.progress(f"Asking you to approve buying {size.qty:g} {sig.symbol}")
                 self.journal.add_event(self.mode, "approval",
@@ -582,6 +593,7 @@ class Engine:
                 continue
             risk.register_buy(sig.symbol, size.qty, sig.price, sector)
             left -= 1
+            sector_buys[sector] = sector_buys.get(sector, 0) + 1
             self.journal.record_trade(self.mode, sig.symbol, "buy", size.qty, sig.price,
                                       order_id, reasons, sources, when=self.now())
             self.order_placed(sig.symbol, StopState(sig.price, stop, sig.price, qty=size.qty), "buy", order_id)

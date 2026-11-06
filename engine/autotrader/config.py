@@ -99,6 +99,8 @@ class Settings:
     stretch_limit: float = 0.0
     # Sell when a holding closes below its average over this many days (the trend has broken).
     trend_exit_days: int = 50
+    # New stocks from one sector per day (0: no limit), so one bad day for a sector hits less.
+    max_buys_per_sector_per_day: int = 0
     # Lowest trend score worth buying (the strategy lab can raise it; 0 means any uptrend).
     min_score: float = 0.0
     max_signal_lookups: int = 10  # stocks per cycle checked for insider/Congress buying
@@ -128,6 +130,7 @@ class Settings:
             trim_over=max(1.1, self.trim_over),
             stretch_limit=max(0.0, self.stretch_limit),
             trend_exit_days=int(min(200, max(20, self.trend_exit_days))),
+            max_buys_per_sector_per_day=int(max(0, self.max_buys_per_sector_per_day)),
             daily_loss_pct=min(self.daily_loss_pct, h.max_daily_loss_pct),
             pause_drawdown_pct=min(self.pause_drawdown_pct, h.pause_drawdown_pct),
             drawdown_brake_pct=min(self.drawdown_brake_pct, h.pause_drawdown_pct),
