@@ -358,7 +358,8 @@ class Engine:
             self.progress(f"Checking {p.symbol}: price ${p.current_price:,.2f}, "
                           f"safety stop ${state.stop_price:,.2f}")
             closed = strategy.finished_days(history, self.now()) if history else history
-            reason = strategy.exit_reason(history, state.stop_price, closed) if history else None
+            reason = (strategy.exit_reason(history, state.stop_price, closed, self.s.trend_exit_days)
+                      if history else None)
             if reason is None and p.current_price <= state.stop_price:
                 reason = f"Hit stop at ${state.stop_price:.2f}"
             if reason is None and penny.is_penny(p.current_price, self.s) and penny.volume_drying_up(history):

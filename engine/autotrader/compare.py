@@ -10,6 +10,7 @@ It runs, on one download of prices:
   no risk sizing, no minimum size, no trims),
 * the current rules,
 * each one-step change the strategy lab may try (see lab.py),
+* a few bigger ideas the lab doesn't try on its own (``EXPERIMENTS``),
 
 and judges each change the way the lab does: better on the older two thirds of
 the period, and better again on the most recent third, which played no part in
@@ -40,6 +41,16 @@ YEARS = 3  # tested on, after a year of warm-up
 # makes no difference here: a backtest only ever sees finished days.)
 OLD_RULES = {"stretch_limit": 0.0, "max_new_buys_per_day": 6, "risk_per_trade_pct": 0.005,
              "min_position_fraction": 0.0, "trim_over": 1000.0}
+
+
+# Bigger changes, each judged the same way against the current rules.
+EXPERIMENTS: dict[str, dict] = {
+    "Trend exit on the 100-day": {"trend_exit_days": 100},
+    "Trend exit on the 150-day": {"trend_exit_days": 150},
+    "Stop 2.5 + 100-day exit": {"atr_stop_multiple": 2.5, "trend_exit_days": 100},
+    "Positions up to 7% (12 max)": {"max_position_pct": 0.07, "max_open_positions": 12},
+    "Cash reserve 5%": {"cash_reserve_pct": 0.05},
+}
 
 
 def row(name: str, full: BacktestResult, tune: BacktestResult, unseen: BacktestResult) -> dict:
@@ -85,6 +96,10 @@ def compare(history: dict, base: Settings, cost_bps: float = 10.0) -> dict:
             r = run(replace(base, **{knob: type(here)(v)}).clamped(), f"{knob} {here:g} -> {v:g}")
             r["holds_up"] = holds_up(r, out["current"])
             out["changes"].append(r)
+    for name, change in EXPERIMENTS.items():
+        r = run(replace(base, **change).clamped(), name)
+        r["holds_up"] = holds_up(r, out["current"])
+        out["changes"].append(r)
     if spy:
         start = spy[MIN_HISTORY].time if len(spy) > MIN_HISTORY else spy[0].time
         closes = [b.close for b in spy if b.time >= start]

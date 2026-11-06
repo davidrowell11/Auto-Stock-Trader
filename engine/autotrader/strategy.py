@@ -105,7 +105,7 @@ def finished_days(bars: Sequence[Bar], now: datetime) -> Sequence[Bar]:
 
 
 def exit_reason(bars: Sequence[Bar], stop_price: float,
-                closed: Sequence[Bar] | None = None) -> str | None:
+                closed: Sequence[Bar] | None = None, trend_days: int = 50) -> str | None:
     """Why the bot should sell now, or None to keep holding.
 
     ``closed`` is the history up to the last finished day (``finished_days``); the trend
@@ -120,9 +120,9 @@ def exit_reason(bars: Sequence[Bar], stop_price: float,
     if not closed:
         return None
     close = closed[-1].close
-    sma50 = ind.sma([b.close for b in closed], 50)
-    if sma50 is not None and close < sma50:
-        return f"Trend broke: closed at ${close:.2f}, below its 50-day average ${sma50:.2f}"
+    line = ind.sma([b.close for b in closed], trend_days)
+    if line is not None and close < line:
+        return f"Trend broke: closed at ${close:.2f}, below its {trend_days}-day average ${line:.2f}"
     return None
 
 

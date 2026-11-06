@@ -95,6 +95,8 @@ class Settings:
     trim_over: float = 1.5
     # Don't buy a stock this many average daily moves above its 20-day average (0: no check).
     stretch_limit: float = 3.0
+    # Sell when a holding closes below its average over this many days (the trend has broken).
+    trend_exit_days: int = 50
     # Lowest trend score worth buying (the strategy lab can raise it; 0 means any uptrend).
     min_score: float = 0.0
     max_signal_lookups: int = 10  # stocks per cycle checked for insider/Congress buying
@@ -123,6 +125,7 @@ class Settings:
             min_position_fraction=min(1.0, max(0.0, self.min_position_fraction)),
             trim_over=max(1.1, self.trim_over),
             stretch_limit=max(0.0, self.stretch_limit),
+            trend_exit_days=int(min(200, max(20, self.trend_exit_days))),
             daily_loss_pct=min(self.daily_loss_pct, h.max_daily_loss_pct),
             pause_drawdown_pct=min(self.pause_drawdown_pct, h.pause_drawdown_pct),
             drawdown_brake_pct=min(self.drawdown_brake_pct, h.pause_drawdown_pct),

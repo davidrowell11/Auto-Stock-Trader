@@ -307,5 +307,23 @@ class CompareTests(unittest.TestCase):
         result = compare(history, base)
         self.assertEqual(result["old"]["name"], "Rules before Nov 6")
         self.assertTrue(all("holds_up" in c for c in result["changes"]))
-        self.assertEqual(len(result["changes"]), 3 + 3 + 2 + 2)
+        from autotrader.compare import EXPERIMENTS
+        self.assertEqual(len(result["changes"]), 3 + 3 + 2 + 2 + len(EXPERIMENTS))
         self.assertIn("Current rules", table(result))
+
+
+class ExitLineAndListingTests(unittest.TestCase):
+    def test_trend_exit_line_is_tunable(self):
+        closes = uptrend(daily=0.002)
+        bars = make_bars([*closes[:-1], closes[-1] * 0.93])  # under the 50-day, over the 100-day
+        self.assertIn("50-day", strategy.exit_reason(bars, 1.0))
+        self.assertIsNone(strategy.exit_reason(bars, 1.0, trend_days=100))
+        self.assertEqual(Settings(trend_exit_days=500).clamped().trend_exit_days, 200)
+
+    def test_listing_keeps_listed_tradable_assets_and_new_exchanges_dont_break_it(self):
+        from autotrader.signals.screener import listed
+        raw = [{"symbol": "AAPL", "name": "Apple", "exchange": "NASDAQ", "tradable": True},
+               {"symbol": "NEWCO", "name": "New", "exchange": "TXSE", "tradable": True},
+               {"symbol": "PINK", "name": "Pink", "exchange": "OTC", "tradable": True},
+               {"symbol": "HALT", "name": "Halted", "exchange": "NYSE", "tradable": False}]
+        self.assertEqual(listed(raw), [("AAPL", "Apple")])

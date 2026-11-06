@@ -148,20 +148,20 @@ def alpaca_listing() -> list[tuple[str, str]]:
     import os
 
     from alpaca.trading.client import TradingClient
-    from alpaca.trading.enums import AssetClass, AssetStatus
-    from alpaca.trading.requests import GetAssetsRequest
 
     key, secret = _keys()
     paper = bool(os.environ.get("ALPACA_TEST_KEY_ID"))
     client = TradingClient(key, secret, paper=paper)
-    assets = client.get_all_assets(GetAssetsRequest(status=AssetStatus.ACTIVE,
-                                                    asset_class=AssetClass.US_EQUITY))
-    out = []
-    for a in assets:
-        exchange = getattr(a.exchange, "value", str(a.exchange))
-        if a.tradable and exchange in EXCHANGES:
-            out.append((a.symbol, str(getattr(a, "name", "") or "")))
-    return out
+    # The raw list: alpaca-py's typed version fails outright on an exchange it doesn't know
+    # yet (Alpaca added TXSE, the Texas exchange, in late 2026).
+    assets = client.get("/assets", {"status": "active", "asset_class": "us_equity"})
+    return listed(assets)
+
+
+def listed(assets: list[dict]) -> list[tuple[str, str]]:
+    """(symbol, name) of each tradable asset on a listed exchange, from Alpaca's raw asset list."""
+    return [(a["symbol"], str(a.get("name") or "")) for a in assets
+            if a.get("tradable") and a.get("exchange") in EXCHANGES and a.get("symbol")]
 
 
 def alpaca_liquidity(symbols: list[str]) -> dict[str, tuple[float, float]]:
