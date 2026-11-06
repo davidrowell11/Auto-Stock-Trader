@@ -43,7 +43,7 @@ from .learning import Learner, LearnerBusy
 from .learning import report as learning_report
 from .models import OrderRequest, Side
 from .risk import CORRELATION_DAYS, RiskManager
-from .universe import sector_of
+from .universe import sector_of, set_sector_lookup
 
 log = logging.getLogger("autotrader.server")
 
@@ -1047,6 +1047,7 @@ def main() -> None:
     learner = Learner(journal, lessons_fn)
 
     sec = SecClient()
+    set_sector_lookup(sec.sic)  # sectors for scanned stocks, from their SEC industry codes
     earnings = EarningsCalendar()
     screener = Screener() if os.environ.get("AUTOTRADER_SCREENER", "true").lower() != "false" else None
     market_scan = (MarketScan() if os.environ.get("AUTOTRADER_MARKET_SCAN", "true").lower() != "false"

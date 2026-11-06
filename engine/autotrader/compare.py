@@ -51,6 +51,8 @@ EXPERIMENTS: dict[str, dict] = {
     "Stop 2.5 + 100-day exit": {"atr_stop_multiple": 2.5, "trend_exit_days": 100},
     "Positions up to 7% (12 max)": {"max_position_pct": 0.07, "max_open_positions": 12},
     "Cash reserve 5%": {"cash_reserve_pct": 0.05},
+    "One new buy per sector per day": {"max_buys_per_sector_per_day": 1},
+    "Two new buys per sector per day": {"max_buys_per_sector_per_day": 2},
 }
 
 
@@ -89,7 +91,7 @@ def holds_up(change: dict, base: dict) -> bool:
 
 
 def compare(history: dict, base: Settings, cost_bps: float = 10.0,
-            ablate_only: bool = False) -> dict:
+            ablate_only: bool = False, experiments_only: bool = False) -> dict:
     tune_h, unseen_h = split_history(history)
 
     def run(settings: Settings, name: str) -> dict:
@@ -100,8 +102,10 @@ def compare(history: dict, base: Settings, cost_bps: float = 10.0,
     spy = history.get("SPY")
     out = {"old": run(replace(base, **OLD_RULES).clamped(), "Rules before Nov 6"),
            "current": run(base, "Current rules"), "changes": []}
-    tries = [(name, change) for name, change in ABLATIONS.items()]
-    if not ablate_only:
+    tries = [] if experiments_only else list(ABLATIONS.items())
+    if experiments_only:
+        tries += list(EXPERIMENTS.items())
+    elif not ablate_only:
         tries += [(f"{k} {getattr(base, k):g} -> {v:g}", {k: type(getattr(base, k))(v)})
                   for k, values in KNOBS.items() for v in values if v != getattr(base, k)]
         tries += list(EXPERIMENTS.items())
@@ -147,6 +151,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json", help="save the results to this file")
     parser.add_argument("--ablate", action="store_true",
                         help="only undo each Nov 6 change on its own (faster)")
+    parser.add_argument("--experiments", action="store_true",
+                        help="only the bigger experiments (faster)")
+    parser.add_argument("--sectors", action="store_true",
+                        help="look up each scanned stock's sector from its SEC industry code")
     args = parser.parse_args(argv)
 
     from .broker.alpaca_broker import AlpacaBroker
@@ -168,7 +176,15 @@ def main(argv: list[str] | None = None) -> int:
           f"{liquid_enough(history, base):.0%}")
     # The whole list is scanned, as the live bot scans its list plus the market scan.
     base = replace(base, always_watch=tuple(s for s in history if s != "SPY")).clamped()
-    result = compare(history, base, args.cost_bps, ablate_only=args.ablate)
+    if args.sectors:
+        from .signals.sec import SecClient
+        from .universe import SECTORS, set_sector_lookup, sector_of
+        set_sector_lookup(SecClient().sic)
+        found = {s: sector_of(s) for s in history if s not in SECTORS}
+        known = sum(1 for v in found.values() if v != "Unknown")
+        print(f"Sectors from SEC industry codes: {known} of {len(found)} scanned stocks")
+    result = compare(history, base, args.cost_bps, ablate_only=args.ablate,
+                     experiments_only=args.experiments)
     result["stocks"] = len(history)
     print(table(result))
     print(f"Done in {time.time() - started:.0f}s")

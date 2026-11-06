@@ -329,3 +329,68 @@ class ExitLineAndListingTests(unittest.TestCase):
                {"symbol": "PINK", "name": "Pink", "exchange": "OTC", "tradable": True},
                {"symbol": "HALT", "name": "Halted", "exchange": "NYSE", "tradable": False}]
         self.assertEqual(listed(raw), [("AAPL", "Apple")])
+
+
+class SectorTests(unittest.TestCase):
+    def tearDown(self):
+        from autotrader.universe import set_sector_lookup
+        set_sector_lookup(None)
+
+    def test_sic_codes_map_to_sectors(self):
+        from autotrader.universe import sector_from_sic
+        for code, sector in [(1311, "Energy"), (2834, "Healthcare"), (3674, "Technology"),
+                             (7372, "Technology"), (6022, "Financials"), (6798, "Real Estate"),
+                             (4911, "Utilities"), (4813, "Communication"), (3711, "Consumer"),
+                             (5331, "Consumer"), (3720, "Industrials"), (2800, "Materials"),
+                             (None, "Unknown")]:
+            self.assertEqual(sector_from_sic(code), sector, code)
+
+    def test_lookup_is_cached_and_failures_retry(self):
+        from autotrader.universe import sector_of, set_sector_lookup
+        calls = []
+
+        def lookup(symbol):
+            calls.append(symbol)
+            if symbol == "BAD":
+                raise OSError("down")
+            return 3674
+
+        set_sector_lookup(lookup)
+        self.assertEqual(sector_of("SMCI"), "Technology")
+        self.assertEqual(sector_of("SMCI"), "Technology")
+        self.assertEqual(sector_of("AAPL"), "Technology")  # the fixed list needs no lookup
+        self.assertEqual(sector_of("BAD"), "Unknown")
+        self.assertEqual(sector_of("BAD"), "Unknown")
+        self.assertEqual(calls, ["SMCI", "BAD", "BAD"])
+
+    def test_sec_client_reads_the_industry_code(self):
+        from autotrader.signals.sec import SecClient
+
+        class Fetch:
+            def __init__(self):
+                self.urls = []
+
+            def json(self, url, headers):
+                self.urls.append(url)
+                if "company_tickers" in url:
+                    return {"0": {"ticker": "SMCI", "cik_str": 1375365},
+                            "1": {"ticker": "FUND", "cik_str": 1}}
+                return {"sic": "3571"} if "1375365" in url else {"sic": ""}
+
+        fetch = Fetch()
+        sec = SecClient(contact="x@example.com", fetch=fetch)
+        self.assertEqual(sec.sic("SMCI"), 3571)
+        self.assertEqual(sec.sic("SMCI"), 3571)
+        self.assertIsNone(sec.sic("FUND"))
+        self.assertIsNone(sec.sic("NOPE"))
+        self.assertEqual(len(fetch.urls), 3)  # tickers once, then each company once
+
+    def test_one_new_buy_per_sector_per_day(self):
+        bars = {s: make_bars(uptrend(start=20 + 5 * i)) for i, s in enumerate(["XOM", "CVX", "COP", "AAPL"])}
+        bars["SPY"] = make_bars(uptrend(start=400))
+        eng, broker = engine_with(bars, max_buys_per_sector_per_day=1)
+        report = eng.run_cycle()
+        bought = sorted(o.symbol for o in broker.orders)
+        self.assertEqual(len([s for s in bought if s in ("XOM", "CVX", "COP")]), 1, bought)
+        self.assertIn("AAPL", bought)
+        self.assertTrue(any("already bought a stock in the Energy sector today" in s for s in report.skipped))

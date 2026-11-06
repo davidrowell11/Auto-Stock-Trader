@@ -132,13 +132,17 @@ class Journal:
         row = cur.fetchone()
         return datetime.fromisoformat(row[0]) if row else None
 
+    def bought_since(self, mode: str, since: datetime) -> set[str]:
+        """The different stocks the bot has bought since a time."""
+        rows = self.db.execute(
+            "SELECT DISTINCT symbol FROM trades WHERE mode = ? AND side = 'buy' AND ts >= ?",
+            (mode, since.astimezone(timezone.utc).isoformat(timespec="seconds")),
+        ).fetchall()
+        return {r[0] for r in rows}
+
     def buys_since(self, mode: str, since: datetime) -> int:
         """How many different stocks the bot has bought since a time."""
-        row = self.db.execute(
-            "SELECT COUNT(DISTINCT symbol) FROM trades WHERE mode = ? AND side = 'buy' AND ts >= ?",
-            (mode, since.astimezone(timezone.utc).isoformat(timespec="seconds")),
-        ).fetchone()
-        return int(row[0] or 0)
+        return len(self.bought_since(mode, since))
 
     def trades(self, mode: str) -> list[dict]:
         cur = self.db.execute(
