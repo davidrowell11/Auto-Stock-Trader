@@ -52,14 +52,14 @@ class TrendExitTests(unittest.TestCase):
     def test_engine_waits_for_the_close(self):
         closes = uptrend(daily=0.001)
         bars = make_bars(closes, spread=0.03)  # jumpy, so the stop sits well below the 50-day
-        clock = [bars[-1].time.replace(hour=11)]
+        clock = [bars[-1].time.replace(hour=15, tzinfo=timezone.utc)]  # 11am New York
         eng, broker = engine_with({"AAPL": bars}, now=lambda: clock[0])
         eng.run_cycle()
         self.assertIn("AAPL", broker.holdings)
         broker.bars["AAPL"] = make_bars([*closes[:-1], closes[-1] * 0.96], spread=0.03)
         report = eng.run_cycle()
         self.assertEqual(report.sells, [])  # 11am: under the 50-day, but the day isn't over
-        clock[0] = clock[0].replace(hour=16, minute=1)
+        clock[0] = clock[0].replace(hour=21, minute=1)  # after the close
         report = eng.run_cycle()
         self.assertTrue(report.sells and "Trend broke" in report.sells[0])
 
@@ -134,6 +134,19 @@ class PacingTests(unittest.TestCase):
                               warmup=260, journal=j)
         self.assertEqual(len(result.equity_curve), 40)
         self.assertGreater(len({t["symbol"] for t in j.trades("test") if t["side"] == "buy"}), 2)
+
+    def test_backtest_cool_offs_end(self):
+        # A stock sold by its stop can be bought again a week later in the replay, not never.
+        closes = uptrend(n=300)
+        for i in range(265, 268):
+            closes[i] = closes[264] * 0.85  # a sharp drop: stopped out
+        for i in range(268, 300):
+            closes[i] = closes[267] * (1.004 ** (i - 267)) * 1.25  # then a fresh run to new highs
+        j = Journal()
+        run_backtest({"A": make_bars(closes), "SPY": make_bars(uptrend(n=300, start=400))},
+                     Settings(always_watch=("A",)).clamped(), warmup=260, journal=j)
+        buys = [t for t in j.trades("test") if t["symbol"] == "A" and t["side"] == "buy"]
+        self.assertGreaterEqual(len(buys), 2, j.trades("test"))
 
 
 class TrimTests(unittest.TestCase):

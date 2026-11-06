@@ -122,7 +122,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--cost-bps", type=float, default=10.0)
     parser.add_argument("--json", help="save the results to this file")
     args = parser.parse_args(argv)
-    logging.getLogger("autotrader").setLevel(logging.ERROR)  # every replayed day logs otherwise
 
     from .broker.alpaca_broker import AlpacaBroker
     from .universe import build_universe
@@ -131,7 +130,10 @@ def main(argv: list[str] | None = None) -> int:
     symbols = build_universe(base.always_watch, base.never_buy)
     if args.wide:
         from .signals.screener import MarketScan
-        symbols += [s for s in MarketScan().symbols() if s not in symbols]
+        scanned = MarketScan().symbols()
+        print(f"Market scan: {len(scanned)} of the most-traded stocks")
+        symbols += [s for s in scanned if s not in symbols]
+    logging.getLogger("autotrader").setLevel(logging.ERROR)  # every replayed day logs otherwise
     symbols = sorted(set(symbols) | {"SPY"})
     started = time.time()
     history = AlpacaBroker(Mode.TEST).get_daily_bars(symbols, MIN_HISTORY + YEARS * 252)

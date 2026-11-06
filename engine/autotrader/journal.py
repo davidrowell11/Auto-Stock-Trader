@@ -111,12 +111,14 @@ class Journal:
     # ----- trades -----
     def record_trade(self, mode: str, symbol: str, side: str, qty: float, price: float,
                      order_id: str | None, reasons: list[str],
-                     sources: list[str] | None = None) -> None:
+                     sources: list[str] | None = None, when: datetime | None = None) -> None:
+        """``when`` defaults to now (a backtest passes the day it's replaying)."""
+        ts = _now() if when is None else when.astimezone(timezone.utc).isoformat(timespec="seconds")
         with self.db:
             self.db.execute(
                 "INSERT INTO trades (ts, mode, symbol, side, qty, price, order_id, reasons, sources)"
                 " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (_now(), mode, symbol, side, qty, price, order_id, json.dumps(reasons),
+                (ts, mode, symbol, side, qty, price, order_id, json.dumps(reasons),
                  json.dumps(sources) if sources is not None else None),
             )
 

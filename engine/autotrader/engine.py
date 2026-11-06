@@ -411,7 +411,7 @@ class Engine:
             report.skipped.append(f"{p.symbol}: sell failed ({exc})")
             return False
         self.journal.record_trade(self.mode, p.symbol, "sell", qty, p.current_price,
-                                  order_id, [reason])
+                                  order_id, [reason], when=self.now())
         state = self.journal.get_stop(self.mode, p.symbol)
         state.qty = p.qty if state.qty is None else state.qty
         self.order_placed(p.symbol, state, "sell", order_id)
@@ -582,7 +582,7 @@ class Engine:
             risk.register_buy(sig.symbol, size.qty, sig.price, sector)
             left -= 1
             self.journal.record_trade(self.mode, sig.symbol, "buy", size.qty, sig.price,
-                                      order_id, reasons, sources)
+                                      order_id, reasons, sources, when=self.now())
             self.order_placed(sig.symbol, StopState(sig.price, stop, sig.price, qty=size.qty), "buy", order_id)
             report.buys.append(f"{sig.symbol} x{size.qty:g} @ ${sig.price:.2f}")
             self.journal.add_event(self.mode, "buy", f"Bought {size.qty:g} {sig.symbol} at about ${sig.price:.2f}")
@@ -673,7 +673,7 @@ class Engine:
             return ["penny stocks are only bought in regular hours"]
         sold = self.journal.last_protective_sell(self.mode, sig.symbol)
         cooloff = timedelta(days=HARD_LIMITS.stop_out_cooloff_days)
-        if sold is not None and datetime.now(timezone.utc) - sold < cooloff:
+        if sold is not None and self.now() - sold < cooloff:
             back = sold + cooloff
             until = f"{back:%b} {back.day}"
             return [f"cooling off after it was sold to protect you (can buy again from {until})"]
