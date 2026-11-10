@@ -209,6 +209,24 @@ class Analyst:
             break
         raise AnalystUnavailable("The analyst didn't return a view")
 
+    def exam_view(self, candidate: dict) -> float:
+        """For the learning exam: the fast model's confidence on a past setup, from the numbers
+        and lessons alone (no news search, so it can't look up what happened)."""
+        messages = [{"role": "user", "content": (
+            "Exam question: judge this past setup from the numbers and lessons only. No news "
+            "search is available. Review this buy candidate:\n\n"
+            + json.dumps(candidate, indent=2, default=str))}]
+        try:
+            response = self.client.beta.messages.create(
+                model=self.quick_model, max_tokens=2000, system=SYSTEM_PROMPT, messages=messages,
+                tools=[SUBMIT_TOOL])
+        except Exception as exc:
+            raise AnalystUnavailable(plain_error(exc)) from exc
+        for block in response.content:
+            if getattr(block, "type", None) == "tool_use" and block.name == "submit_view":
+                return _to_view(block.input).confidence
+        raise AnalystUnavailable("No answer to the exam question")
+
     @staticmethod
     def _run_tool(block, lookup: Callable[[str], dict] | None, used: int) -> str:
         """Our side of a tool call. Bad input or a failure comes back as text, never a crash."""

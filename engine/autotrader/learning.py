@@ -19,6 +19,13 @@ result joins its memory. Once a week the bot:
    It also checks how sure the analyst said it was against how its calls
    turned out a month later (calibration.py), and corrects its confidence
    by a small, capped amount once there are enough graded calls.
+   Before a changed notebook is used it sits an exam: the fast model judges
+   up to 12 past setups (names and dates hidden, no news search) with the old
+   lessons and with the new, and the new notebook is dropped if its calls are
+   worse. (The exam reuses trades the lessons came from, so it is a sanity
+   check that new lessons don't hurt, not proof they help.) It can also
+   practise once a month on trades replayed from the backtest, kept apart
+   from real ones and never counted in the weights or stats.
 3. Keeps its recent finished trades as cases. Before a buy, the most similar
    past cases (same kind of sources, a similar trend score, penny or not) are
    shown with the buy's reasons and given to the analyst, so it can see "the
@@ -47,8 +54,8 @@ from datetime import date, datetime, timedelta, timezone
 
 from . import calibration, scorecard
 from .journal import TRIM, Journal
-from .notebook import (MAX_REVIEWS, ReflectFn, clean_reviews, lessons_for_analyst, settle,
-                       trade_id)
+from .notebook import (EXAM_MIN_CASES, EXAM_TOLERANCE, MAX_REVIEWS, ExamFn, ReflectFn,
+                       clean_reviews, exam_cases, lessons_for_analyst, settle, sit_exam, trade_id)
 
 log = logging.getLogger("autotrader.learning")
 
@@ -60,6 +67,7 @@ WEIGHT_MIN, WEIGHT_MAX = 0.7, 1.3
 FLAT_LESSONS = 6  # the older one-list lessons
 MAX_LESSONS = 16  # what the analyst is given: 12 proven notebook lessons and 4 unproven ones
 MAX_OUTCOMES_SHOWN = 60
+MAX_PRACTICE = 80  # backtest trades given to the analyst as practice
 MAX_CASES = 200  # finished trades kept for "similar past trades"
 SIMILAR_K = 5
 SIMILAR_MAX_DISTANCE = 0.8
@@ -259,10 +267,12 @@ def _same(a: dict | None, b: dict) -> bool:
 class Learner:
     def __init__(self, journal: Journal, lessons_fn: LessonsFn | None = None,
                  now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
-                 prices_fn: PricesFn | None = None, reflect_fn: ReflectFn | None = None) -> None:
+                 prices_fn: PricesFn | None = None, reflect_fn: ReflectFn | None = None,
+                 exam_fn: ExamFn | None = None) -> None:
         self.journal = journal
         self.lessons_fn = lessons_fn  # the older flat lessons; reflect_fn (the notebook) wins
         self.reflect_fn = reflect_fn
+        self.exam_fn = exam_fn  # a cheap check that a new notebook doesn't make its calls worse
         self.prices_fn = prices_fn  # for grading the analyst's calls; None skips the scorecard
         self.now = now
         self._last_try: datetime | None = None
@@ -319,7 +329,8 @@ class Learner:
         card = self.grade_analyst()
         # Both bots' finished trades teach it; Live's real-money results are just as useful.
         results = outcomes(self.journal, "test") + outcomes(self.journal, "live")
-        if len(results) < MIN_TRADES_FOR_LESSONS:
+        practice = (self.journal.memory("test", "practice") or {}).get("cases", [])
+        if len(results) < MIN_TRADES_FOR_LESSONS and not (practice and self.reflect_fn):
             log.info("Not enough finished trades to learn from yet (%d)", len(results))
             return None
         results.sort(key=lambda o: o.sold)
@@ -330,15 +341,21 @@ class Learner:
         last = self.journal.memory("test") or {}
         notebook, reviews = last.get("notebook", []), last.get("reviews", [])
         reviewed = set(last.get("reviewed", []))
+        exam = last.get("exam")
         if self.reflect_fn is not None:
-            shown = [o.as_dict() for o in results[-MAX_OUTCOMES_SHOWN:]]
+            # Practice trades (replayed from the backtest) first, then the real ones.
+            shown = practice + [o.as_dict() for o in results[-MAX_OUTCOMES_SHOWN:]]
             new = [t for t in shown if t["id"] not in reviewed]
             if new or not notebook:
                 try:
                     out = self.reflect_fn(new, shown, notebook, stats, card)
                     known = {t["id"] for t in shown} | {
                         x for e in notebook for x in (*e.get("support", []), *e.get("against", []))}
-                    notebook = settle(out.get("notebook", []), known, notebook, self.now().date())
+                    proposed = settle(out.get("notebook", []), known, notebook, self.now().date())
+                    exam = self._exam(shown, lessons_for_analyst(notebook) if notebook else previous,
+                                      lessons_for_analyst(proposed))
+                    if exam is None or exam["passed"]:
+                        notebook = proposed
                     reviews = (reviews + clean_reviews(out.get("reviews", []), {t["id"] for t in new})
                                )[-MAX_REVIEWS:]
                     reviewed |= {t["id"] for t in new}
@@ -360,6 +377,7 @@ class Learner:
             "weights": weights, "lessons": lessons, "trades": len(results), "wins": wins,
             "lessons_error": lessons_error,
             "notebook": notebook, "reviews": reviews, "reviewed": sorted(reviewed)[-1000:],
+            "exam": exam, "practice_trades": len(practice),
             # How sure the analyst should be, from its graded calls (kept until there's a new grade).
             "calibration": (card or {}).get("calibration") or last.get("calibration"),
             "cases": [o.as_dict() for o in results[-MAX_CASES:]],
@@ -385,6 +403,37 @@ class Learner:
                                    "The bot learned new lessons in Test. Review them in the app "
                                    "before Live uses them.")
         return record
+
+    def _exam(self, trades: list[dict], old: list[str], new: list[str]) -> dict | None:
+        """Old lessons vs new on the same past setups. None when there's no exam to sit."""
+        cases = exam_cases(trades)
+        if self.exam_fn is None or old == new or len(cases) < EXAM_MIN_CASES:
+            return None
+        before, after = sit_exam(self.exam_fn, cases, old), sit_exam(self.exam_fn, cases, new)
+        if before is None or after is None:
+            return None  # too many questions failed: don't block learning on an outage
+        passed = after <= before + EXAM_TOLERANCE
+        if not passed:
+            self.journal.add_event("test", "learning",
+                                   "The analyst's new lessons made its calls on past trades worse, "
+                                   "so it kept its old ones")
+        return {"cases": len(cases), "old_score": before, "new_score": after, "passed": passed,
+                "on": self.now().date().isoformat()}
+
+    def practice(self, replayed: list[dict]) -> dict | None:
+        """Learn from trades replayed in a backtest, marked as practice, then review as usual."""
+        from .notebook import practice_cases
+        cases = practice_cases(replayed[-MAX_PRACTICE:])
+        self.journal.save_memory("test", "practice", {
+            "cases": cases, "made": self.now().isoformat(timespec="seconds")})
+        self.journal.add_event("test", "learning",
+                               f"The analyst is practising on {len(cases)} trades replayed from "
+                               "the last few years")
+        return self.learn()
+
+    def last_practice(self) -> datetime | None:
+        made = (self.journal.memory("test", "practice") or {}).get("made")
+        return datetime.fromisoformat(made) if made else None
 
     def approve_live(self) -> dict:
         proposed = self.journal.memory("live", "proposed")
@@ -417,7 +466,8 @@ def report(journal: Journal, mode: str) -> dict:
                 "stats": record.get("stats", {}),
                 "notebook": record.get("notebook", []),
                 "reviews": list(reversed(record.get("reviews", [])))[:10],
-                "calibration": record.get("calibration")}
+                "calibration": record.get("calibration"),
+                "exam": record.get("exam"), "practice_trades": record.get("practice_trades", 0)}
     finished = {m: len(outcomes(journal, m)) for m in ("test", "live")}
     return {
         "active": view(journal.memory(mode)),

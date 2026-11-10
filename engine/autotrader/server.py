@@ -225,6 +225,8 @@ class SettingsStore:
         return load_settings(mode=mode, **overrides)
 
 
+PRACTICE_EVERY = timedelta(days=30)  # practice on replayed trades at most this often (it costs a little)
+
 SESSION_NOTE = {"pre": " (pre-market, limit orders only)", "after": " (after hours, limit orders only)"}
 
 
@@ -851,6 +853,40 @@ def create_app(runners: dict[Mode, BotRunner], journal: Journal, token: str,
             raise HTTPException(409, "Not enough finished trades to learn from yet")
         return learning_report(journal, Mode.TEST.value)
 
+    practising = threading.Lock()
+
+    @app.post("/api/test/learning/practice", **secured)
+    def practice_now():
+        """Let the analyst practise on trades replayed from the last few years (runs in the background)."""
+        test = runners[Mode.TEST]
+        if learner.reflect_fn is None:
+            raise HTTPException(503, "The AI analyst is off (add ANTHROPIC_API_KEY on the server)")
+        if test.lab is None or test.lab.history_fn is None:
+            raise HTTPException(503, "Practice needs price history, which this server can't fetch")
+        last = learner.last_practice()
+        if last is not None and datetime.now(timezone.utc) - last < PRACTICE_EVERY:
+            raise HTTPException(409, f"It practised on {last:%b} {last.day}; it can again "
+                                     f"{PRACTICE_EVERY.days} days after that")
+        if not practising.acquire(blocking=False):
+            raise HTTPException(409, "It's already practising")
+
+        def run() -> None:
+            from .backtest import run_backtest
+            from .learning import outcomes
+            try:
+                replay = Journal()
+                run_backtest(test.lab.history_fn(), test.store.settings_for(Mode.TEST), journal=replay)
+                learner.practice([o.as_dict() for o in outcomes(replay, "test")])
+            except Exception as exc:
+                log.exception("Practice failed")
+                journal.add_event("test", "learning", f"Practice on past trades failed: {str(exc)[:200]}")
+            finally:
+                practising.release()
+
+        threading.Thread(target=run, name="practice", daemon=True).start()
+        return {"started": True, "note": "Replaying the last few years and reviewing the trades. "
+                                         "This takes a few minutes; the results appear under what the bot learned."}
+
     @app.get("/api/ai/spending", **secured)
     def ai_spending():
         """What the AI analyst has cost this month, and the cap."""
@@ -1206,7 +1242,8 @@ def main() -> None:
         ask_stream_fn = lambda q, ctx: ask_stream(client, q, ctx)  # noqa: E731
         lessons_fn = claude_lessons(client)
         reflect_fn = claude_reflect(client)
-    learner = Learner(journal, lessons_fn, reflect_fn=reflect_fn)
+    learner = Learner(journal, lessons_fn, reflect_fn=reflect_fn,
+                      exam_fn=analyst.exam_view if analyst is not None else None)
 
     sec = SecClient()
     set_sector_lookup(sec.sic)  # sectors for scanned stocks, from their SEC industry codes

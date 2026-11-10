@@ -35,6 +35,13 @@ MAX_TEXT = 300
 CANDIDATES_FOR_ANALYST = 4
 CAUSES = ("reasoning", "rules", "market", "luck")
 
+EXAM_MIN_CASES = 8  # finished trades (real or practice) with their desk facts, before any exam
+EXAM_CASES = 12
+EXAM_TOLERANCE = 0.01  # a new notebook may score this much worse (noise) and still pass
+PRACTICE = "practice"  # the id prefix of trades replayed from the backtest
+
+# A past setup -> the analyst's confidence it would be up a few weeks later (fast model, no search).
+ExamFn = Callable[[dict], float]
 # (new trades to review, all recent trades, notebook entries, stats, scorecard or None)
 #   -> {"reviews": [...], "notebook": [...]}
 ReflectFn = Callable[[list[dict], list[dict], list[dict], dict, dict | None], dict]
@@ -187,3 +194,36 @@ def claude_reflect(client, model: str | None = None) -> ReflectFn:
         raise AnalystUnavailable("The analyst didn't return its review")
 
     return reflect
+
+
+# ----- the exam: does a new notebook make the analyst's calls better or worse? -----
+def exam_cases(trades: list[dict]) -> list[dict]:
+    """The most recent finished trades whose setup is known (their desk facts), newest last."""
+    return [t for t in trades if t.get("facts")][-EXAM_CASES:]
+
+
+def sit_exam(exam_fn: ExamFn, cases: list[dict], lessons: list[str]) -> float | None:
+    """The analyst's Brier score on past setups with these lessons (0 is perfect, 0.25 a coin flip).
+
+    The stock's name and dates are hidden, so it judges the setup, not what it may know happened.
+    None if too few answers came back to judge.
+    """
+    scores = []
+    for t in cases:
+        candidate = {"symbol": "a past buy (name hidden)", "sources": t.get("sources", []),
+                     "score": t.get("score"), "desk_check": t["facts"],
+                     "lessons_from_past_trades": lessons}
+        try:
+            p = float(exam_fn(candidate))
+        except Exception as exc:  # one failed question doesn't fail the exam
+            log.info("Exam question failed: %s", exc)
+            continue
+        scores.append((min(1.0, max(0.0, p)) - (t["return"] > 0)) ** 2)
+    if len(scores) < max(1, len(cases) // 2):
+        return None
+    return round(sum(scores) / len(scores), 4)
+
+
+def practice_cases(results: list[dict]) -> list[dict]:
+    """Backtest trades as practice cases, marked so they're never mixed up with real ones."""
+    return [{**r, "id": f"{PRACTICE} {r['id']}", "practice": True} for r in results]
