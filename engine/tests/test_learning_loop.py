@@ -268,6 +268,25 @@ class ExamAndPracticeTests(unittest.TestCase):
         self.assertEqual(record["exam"]["cases"], 8)
         self.assertEqual(record["notebook"][0]["text"], self.proposal)
 
+    def test_a_failed_exam_leaves_the_trades_to_review_again(self):
+        exam = lambda c: 0.9 if any(self.proposal in x for x in c["lessons_from_past_trades"]) else 0.5  # noqa: E731
+        self.losers()
+        record = self.learner(exam).learn()
+        self.assertFalse(record["exam"]["passed"])
+        self.assertEqual(record["reviewed"], [])
+
+    def test_the_exam_hides_its_earlier_confidence(self):
+        seen = []
+        cases = [{"facts": {"x": 1, "analyst_confidence": 0.72}, "return": 0.1}]
+        self.sit_exam(lambda c: seen.append(c["desk_check"]) or 0.6, cases, [])
+        self.assertEqual(seen, [{"x": 1}])
+
+    def test_small_calibration_drift_isnt_a_new_lesson(self):
+        from autotrader.learning import _same
+        a = {"weights": {}, "lessons": ["x"], "calibration": {"shift": -0.031}}
+        self.assertTrue(_same(a, {**a, "calibration": {"shift": -0.029}}))
+        self.assertFalse(_same(a, {**a, "calibration": {"shift": -0.08}}))
+
     def test_no_exam_with_too_few_cases(self):
         self.losers(3)
         record = self.learner(lambda c: 0.9).learn()

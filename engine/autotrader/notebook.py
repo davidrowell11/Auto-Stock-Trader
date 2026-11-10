@@ -260,7 +260,10 @@ def sit_exam(exam_fn: ExamFn, cases: list[dict], lessons: list[str],
     scores, made = [], 0.0
     for t in cases:
         candidate = {"symbol": "a past buy (name hidden)", "sources": t.get("sources", []),
-                     "score": t.get("score"), "desk_check": t["facts"],
+                     "score": t.get("score"),
+                     # Without its own earlier confidence, so it judges the setup afresh.
+                     "desk_check": {k: v for k, v in t["facts"].items()
+                                    if k != "analyst_confidence"},
                      "lessons_from_past_trades": lessons}
         try:
             p = float(exam_fn(candidate))

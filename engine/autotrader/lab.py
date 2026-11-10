@@ -269,9 +269,10 @@ class Lab:
         if starter is not None and starter():
             # Live's first days only allow safer rules, the same as changes made in the app.
             live = self.store.settings_for(Mode.LIVE)
+            fixed = self._fixed("live")  # your own rules win, so the lab's value never applies
             for k, v in clamp_rules(proposed["rules"]).items():
                 rule = RULES_BY_KEY.get(k)
-                if rule is not None and rule.looser(getattr(live, k), v):
+                if rule is not None and k not in fixed and rule.looser(getattr(live, k), v):
                     raise LookupError(
                         f"For the first {HARD_LIMITS.live_starter_days} days of Live, rules can only "
                         f"be made safer, and this change ({rule.label}) takes more risk. "

@@ -32,6 +32,7 @@ def stock_facts(symbol: str, bars: Sequence[Bar], market: Sequence[Bar] | None =
         return None if not avg else _pct(price / avg - 1)
 
     high_52w = max(b.high for b in bars[-252:])
+    atr = ind.atr(bars)  # None with too little history: unknown, not "barely moves"
     vol_avg = sum(b.volume for b in bars[-21:-1]) / max(1, len(bars[-21:-1]))
     facts = {
         "symbol": symbol,
@@ -43,7 +44,7 @@ def stock_facts(symbol: str, bars: Sequence[Bar], market: Sequence[Bar] | None =
         "return_3_months": _pct(ind.pct_change(closes, 63)),
         "below_52_week_high": _pct(price / high_52w - 1) if high_52w else None,
         "volume_vs_20_day_average": round(bars[-1].volume / vol_avg, 2) if vol_avg else None,
-        "average_daily_move": _pct((ind.atr(bars) or 0) / price) if price else None,
+        "average_daily_move": _pct(atr / price) if price and atr else None,
     }
     if market:
         mkt = ind.pct_change([b.close for b in market], 63)

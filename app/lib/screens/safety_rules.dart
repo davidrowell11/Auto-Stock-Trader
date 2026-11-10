@@ -74,7 +74,7 @@ class _SafetyRulesScreenState extends State<SafetyRulesScreen> {
     final rules = report?.rules ?? [];
     final riskier = [
       for (final r in reset ? rules : changed)
-        if (r.looser(r.value, reset ? r.recommended : draft[r.key]!)) r,
+        if (r.looser(r.value, reset ? r.ifReset : draft[r.key]!)) r,
     ];
     if (live && riskier.isNotEmpty && !(report?.starterLock ?? false)) {
       final ok = await showDialog<bool>(
@@ -230,7 +230,8 @@ class _SafetyRulesScreenState extends State<SafetyRulesScreen> {
       builder: (c) => AlertDialog(
         title: const Text('Back to the recommended rules?'),
         content: const Text(
-          'Every rule goes back to the tested default. Your own values are forgotten.',
+          'Your own values are forgotten. Every rule goes back to the tested '
+          'default, or to the strategy lab\'s value where it has one.',
         ),
         actions: [
           TextButton(
