@@ -354,7 +354,8 @@ class _LearningCardState extends State<LearningCard> {
         const SizedBox(width: 8),
         Flexible(
           child: Text(
-            '${e.support} trade${e.support == 1 ? '' : 's'} for · ${e.against} against',
+            '${e.support} trade${e.support == 1 ? '' : 's'} for · ${e.against} against'
+            '${e.avgReturn == null ? '' : ' · they averaged ${pct(e.avgReturn!)}'}',
             style: Theme.of(context).textTheme.bodySmall
                 ?.copyWith(color: AppColors.muted),
           ),
@@ -431,9 +432,14 @@ class _LearningCardState extends State<LearningCard> {
       const SizedBox(width: 8),
       Expanded(
         child: Text(
-          e.passed
-              ? 'Its latest lessons passed their exam on ${e.cases} past trades '
-                    '(score ${e.newScore.toStringAsFixed(3)} vs ${e.oldScore.toStringAsFixed(3)} before; lower is better).'
+          e.newMoney != null && e.oldMoney != null
+              ? (e.passed
+                    ? 'Its latest lessons passed their exam on ${e.cases} past trades: '
+                          'the buys it would have made returned ${pct(e.newMoney!)} in total, vs ${pct(e.oldMoney!)} before.'
+                    : 'Its latest lessons would have made less on ${e.cases} past trades '
+                          '(${pct(e.newMoney!)} vs ${pct(e.oldMoney!)}), so it kept the old ones.')
+              : e.passed
+              ? 'Its latest lessons passed their exam on ${e.cases} past trades.'
               : 'Its latest lessons made its calls on ${e.cases} past trades worse, so it kept the old ones.',
           style: Theme.of(context).textTheme.bodySmall,
         ),
