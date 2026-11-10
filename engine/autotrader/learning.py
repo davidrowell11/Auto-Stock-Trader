@@ -233,11 +233,6 @@ def after_hours_verdict(results: list["Outcome"]) -> dict | None:
     return {"trades": len(ah), "wins": wins, "avg_return": round(avg, 4),
             "regular_avg_return": round(reg, 4), "extra_confidence": extra, "size": size,
             "note": note}
-    out.update(paused=True, since=since.isoformat(), note=(
-        f"after-hours buys are paused: the last {len(ah)} averaged {avg:+.1%}, against "
-        f"{reg:+.1%} in regular hours. The bot tries them again on "
-        f"{retry:%b} {retry.day}"))
-    return out
 
 
 def outcomes(journal: Journal, mode: str) -> list[Outcome]:
