@@ -326,6 +326,11 @@ class Engine:
         left = self.buys_left_today()
         if left <= 0:
             n = self.s.max_new_buys_per_day
+            if self.overnight and len(self.bought_today()) < n:
+                report.paced = (f"bought its {OVERNIGHT_MAX_BUYS} new stock for tonight, the "
+                                "overnight limit; more can be bought from 4am New York time")
+                self.progress(f"No more buys tonight: {report.paced}")
+                return report
             report.paced = f"bought {n} new stock{'' if n == 1 else 's'} today, the daily limit"
             self.progress(f"No more buys today: {report.paced}")
             return report
