@@ -97,8 +97,9 @@ class AfterHoursEngineTests(unittest.TestCase):
         broker = SlowBroker(100_000, bars, assets=assets)
         e = engine(broker, self.journal, "overnight", overnight_buys=True, max_new_buys_per_day=3)
         e.run_cycle()
-        e.run_cycle()
+        report = e.run_cycle()
         self.assertEqual(len([o for o in broker.orders if o.side is Side.BUY]), 1)
+        self.assertIn("overnight limit", report.paced)
 
     def test_overnight_buying_off_waits_for_4am(self):
         report = engine(self.broker, self.journal, "overnight", overnight_buys=False).run_cycle()
