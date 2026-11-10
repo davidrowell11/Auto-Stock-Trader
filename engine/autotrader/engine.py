@@ -552,6 +552,9 @@ class Engine:
             similar_note, similar = self.memory.similar_note(sources, sig.score)
             if similar_note:
                 reasons.append(similar_note)
+            check = desk.desk_check(sig.symbol, bars, risk.positions, risk.capital, sector,
+                                    sector_of, self.mood)
+            facts = desk.trade_facts(check)
             if self.analyst is not None:
                 cached = self.journal.todays_view(self.mode, sig.symbol)
                 if not cached:
@@ -560,10 +563,8 @@ class Engine:
                         continue
                     reviews += 1
                     self.progress(f"Asking the AI analyst about {sig.symbol}")
-                check = None if cached else desk.desk_check(
-                    sig.symbol, bars, risk.positions, risk.capital, sector, sector_of, self.mood)
-                verdict = self._analyst_verdict(sig, is_penny, cached, similar, check,
-                                                market=bars.get(MARKET))
+                verdict = self._analyst_verdict(sig, is_penny, cached, similar,
+                                                None if cached else check, market=bars.get(MARKET))
                 if isinstance(verdict, str):
                     report.skipped.append(f"{sig.symbol}: {verdict}")
                     self.progress(f"Skipped {sig.symbol}: {verdict}")
@@ -571,10 +572,11 @@ class Engine:
                 if verdict is not None:
                     reasons.append(f"Analyst ({verdict.confidence:.0%} confident): {verdict.reasoning}")
                     sources.append("analyst")
+                    facts["analyst_confidence"] = round(verdict.confidence, 3)
             limit = limit_for(Side.BUY, sig.price, self.extended, is_penny)
             if self.needs_approval:
                 self.journal.queue_approval(self.mode, sig.symbol, "buy", size.qty, limit, reasons,
-                                           sources)
+                                           sources, facts)
                 risk.register_buy(sig.symbol, size.qty, sig.price, sector)
                 left -= 1
                 sector_buys[sector] = sector_buys.get(sector, 0) + 1
@@ -598,7 +600,7 @@ class Engine:
             left -= 1
             sector_buys[sector] = sector_buys.get(sector, 0) + 1
             self.journal.record_trade(self.mode, sig.symbol, "buy", size.qty, sig.price,
-                                      order_id, reasons, sources, when=self.now())
+                                      order_id, reasons, sources, when=self.now(), facts=facts)
             self.order_placed(sig.symbol, StopState(sig.price, stop, sig.price, qty=size.qty), "buy", order_id)
             report.buys.append(f"{sig.symbol} x{size.qty:g} @ ${sig.price:.2f}")
             self.journal.add_event(self.mode, "buy", f"Bought {size.qty:g} {sig.symbol} at about ${sig.price:.2f}")
@@ -649,7 +651,11 @@ class Engine:
         if not view.approves:
             flags = f" Red flags: {'; '.join(view.red_flags)}." if view.red_flags else ""
             return f"analyst said skip: {view.reasoning}{flags}"
-        if view.confidence < floor:
+        sure = self.memory.adjust(view.confidence)  # corrected by its track record
+        if sure < floor:
+            if abs(sure - view.confidence) >= 0.005:
+                return (f"analyst confidence {view.confidence:.0%} ({sure:.0%} after its track "
+                        f"record) is below the {floor:.0%} needed")
             return f"analyst confidence {view.confidence:.0%} is below the {floor:.0%} needed"
         return view
 

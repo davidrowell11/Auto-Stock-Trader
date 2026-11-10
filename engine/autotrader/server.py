@@ -532,7 +532,8 @@ class BotRunner:
         # Tagged by how it's bought now, not how things stood when it was suggested.
         sources = [x for x in a["sources"] if x != "after_hours"] + (["after_hours"] if extended else [])
         self.journal.record_trade(self.mode.value, a["symbol"], "buy", qty, price, order_id,
-                                  [*a["reasons"], "Approved by you in the app"], sources)
+                                  [*a["reasons"], "Approved by you in the app"], sources,
+                                  facts=a.get("facts") or None)
         stop = strategy.initial_stop(price, sig.atr, strategy.stop_multiple(price, s))
         engine.order_placed(a["symbol"], StopState(price, stop, price, qty=qty), "buy", order_id)
         self.journal.set_approval_status(approval_id, "approved")
@@ -1187,11 +1188,13 @@ def main() -> None:
         backup.start()
 
     analyst, ask_fn, ask_stream_fn, lessons_fn, spend = None, None, None, None, None
+    reflect_fn = None
     if os.environ.get("ANTHROPIC_API_KEY"):
         import anthropic
 
         from .analyst import Analyst, ask, ask_stream
         from .learning import claude_lessons
+        from .notebook import claude_reflect
 
         from .spend import DEFAULT_MONTHLY_CAP, MeteredClient, SpendTracker
 
@@ -1202,7 +1205,8 @@ def main() -> None:
         ask_fn = lambda q, ctx: ask(client, q, ctx)  # noqa: E731
         ask_stream_fn = lambda q, ctx: ask_stream(client, q, ctx)  # noqa: E731
         lessons_fn = claude_lessons(client)
-    learner = Learner(journal, lessons_fn)
+        reflect_fn = claude_reflect(client)
+    learner = Learner(journal, lessons_fn, reflect_fn=reflect_fn)
 
     sec = SecClient()
     set_sector_lookup(sec.sic)  # sectors for scanned stocks, from their SEC industry codes

@@ -62,10 +62,10 @@ class WeightTests(unittest.TestCase):
         self.assertEqual(weights_from(self.stats(0, 200, loss=-0.5))["screener"], WEIGHT_MIN)
 
     def test_memory_clamps_stored_weights(self):
-        m = Memory.from_record({"weights": {"screener": 9, "trend": 0.1}, "lessons": ["a"] * 10})
+        m = Memory.from_record({"weights": {"screener": 9, "trend": 0.1}, "lessons": ["a"] * 30})
         self.assertEqual(m.weight("screener"), WEIGHT_MAX)
         self.assertEqual(m.weight("trend"), 1.0)  # only the expert sources are ever weighted
-        self.assertEqual(len(m.lessons), 6)
+        self.assertEqual(len(m.lessons), 16)  # 12 proven + 4 unproven from the notebook
 
 
 class LearnerTests(unittest.TestCase):

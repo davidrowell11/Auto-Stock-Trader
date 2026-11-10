@@ -91,3 +91,17 @@ def desk_check(symbol: str, bars: dict, positions: Sequence[Position], capital: 
         "portfolio": portfolio_facts(symbol, sector, bars, positions, capital, sector_of),
         "units": "Shares of 1: 0.05 means 5%. volume_vs_20_day_average 2.0 means twice the usual.",
     }
+
+
+def trade_facts(check: dict) -> dict:
+    """The few desk-check numbers kept with a trade, for reviewing it once it's sold."""
+    stock, port = check.get("stock", {}), check.get("portfolio", {})
+    keep = ("above_20_day_average", "above_50_day_average", "above_200_day_average",
+            "return_1_month", "return_3_months", "return_3_months_vs_market", "below_52_week_high",
+            "volume_vs_20_day_average", "average_daily_move")
+    twin = port.get("moves_most_like") or {}
+    return {**{k: stock[k] for k in keep if stock.get(k) is not None},
+            "market_mood": check.get("market", {}).get("mood"),
+            "sector": port.get("sector"),
+            "same_sector_held": len(port.get("held_in_same_sector") or []),
+            **({"closest_twin_correlation": twin["correlation"]} if twin else {})}

@@ -9,8 +9,16 @@ result joins its memory. Once a week the bot:
    winners gets a little more weight when ranking buys, and one that keeps
    losing gets a little less, always between 0.7 and 1.3. With fewer than
    five finished trades a source stays at 1.0.
-2. Asks Claude for a few short lessons from the finished trades. The lessons
-   go into every AI analyst review from then on.
+2. Has the analyst review its own finished trades (notebook.py): a short
+   post-mortem of each new one, and a notebook of lessons, each with the
+   trades that back it and those against it. The code, not Claude, decides
+   from that evidence which lessons are proven (5+ trades, twice as many for
+   as against), which are still unproven, and which are retired. Proven
+   lessons go into every analyst review, plus a few unproven ones marked as
+   such. (Without the notebook, Claude writes a short flat list instead.)
+   It also checks how sure the analyst said it was against how its calls
+   turned out a month later (calibration.py), and corrects its confidence
+   by a small, capped amount once there are enough graded calls.
 3. Keeps its recent finished trades as cases. Before a buy, the most similar
    past cases (same kind of sources, a similar trend score, penny or not) are
    shown with the buy's reasons and given to the analyst, so it can see "the
@@ -37,8 +45,10 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 
-from . import scorecard
+from . import calibration, scorecard
 from .journal import TRIM, Journal
+from .notebook import (MAX_REVIEWS, ReflectFn, clean_reviews, lessons_for_analyst, settle,
+                       trade_id)
 
 log = logging.getLogger("autotrader.learning")
 
@@ -47,7 +57,8 @@ RETRY_AFTER = timedelta(hours=6)  # after a failed or skipped attempt
 MIN_TRADES_FOR_LESSONS = 3
 MIN_TRADES_FOR_WEIGHT = 5
 WEIGHT_MIN, WEIGHT_MAX = 0.7, 1.3
-MAX_LESSONS = 6
+FLAT_LESSONS = 6  # the older one-list lessons
+MAX_LESSONS = 16  # what the analyst is given: 12 proven notebook lessons and 4 unproven ones
 MAX_OUTCOMES_SHOWN = 60
 MAX_CASES = 200  # finished trades kept for "similar past trades"
 SIMILAR_K = 5
@@ -73,6 +84,7 @@ class Outcome:
     sources: list[str]
     sell_reason: str
     score: float | None = None  # the trend score when it was bought
+    facts: dict = field(default_factory=dict)  # the desk check's numbers when it was bought
 
     @property
     def ret(self) -> float:
@@ -83,9 +95,13 @@ class Outcome:
         return max(0, (datetime.fromisoformat(self.sold) - datetime.fromisoformat(self.bought)).days)
 
     def as_dict(self) -> dict:
-        return {"symbol": self.symbol, "mode": self.mode, "bought": self.bought[:10],
-                "sold": self.sold[:10], "days_held": self.days, "return": round(self.ret, 4),
-                "sources": self.sources, "sell_reason": self.sell_reason, "score": self.score}
+        out = {"symbol": self.symbol, "mode": self.mode, "bought": self.bought[:10],
+               "sold": self.sold[:10], "days_held": self.days, "return": round(self.ret, 4),
+               "sources": self.sources, "sell_reason": self.sell_reason, "score": self.score}
+        out["id"] = trade_id(out)
+        if self.facts:
+            out["facts"] = self.facts
+        return out
 
 
 def _score_of(reasons: list[str]) -> float | None:
@@ -114,6 +130,11 @@ class Memory:
     weights: dict[str, float] = field(default_factory=dict)
     lessons: list[str] = field(default_factory=list)
     cases: list[dict] = field(default_factory=list)  # finished trades, as Outcome.as_dict()
+    calibration_shift: float = 0.0  # added to the analyst's confidence (calibration.py)
+
+    def adjust(self, confidence: float) -> float:
+        """The analyst's confidence, corrected by its track record."""
+        return calibration.adjust(confidence, self.calibration_shift)
 
     def similar(self, sources: list[str], score: float,
                 today: date | None = None) -> list[dict]:
@@ -149,8 +170,13 @@ class Memory:
             return cls()
         weights = {k: min(WEIGHT_MAX, max(WEIGHT_MIN, float(v)))
                    for k, v in record.get("weights", {}).items() if k in WEIGHTED}
+        try:
+            shift = float((record.get("calibration") or {}).get("shift") or 0.0)
+        except (TypeError, ValueError):
+            shift = 0.0
         return cls(weights, [str(x) for x in record.get("lessons", [])][:MAX_LESSONS],
-                   [c for c in record.get("cases", []) if isinstance(c, dict) and "return" in c])
+                   [c for c in record.get("cases", []) if isinstance(c, dict) and "return" in c],
+                   calibration.adjust(0.5, shift) - 0.5)
 
 
 def outcomes(journal: Journal, mode: str) -> list[Outcome]:
@@ -171,7 +197,7 @@ def outcomes(journal: Journal, mode: str) -> list[Outcome]:
             continue
         out.append(Outcome(mode, t["symbol"], buy["ts"], t["ts"], float(buy["price"]),
                            float(t["price"]), list(buy["sources"]), reason,
-                           _score_of(buy["reasons"])))
+                           _score_of(buy["reasons"]), dict(buy.get("facts") or {})))
     return out
 
 
@@ -216,20 +242,27 @@ class LearnerBusy(RuntimeError):
     pass
 
 
+def _shift(record: dict | None) -> float:
+    return float(((record or {}).get("calibration") or {}).get("shift") or 0.0)
+
+
 def _changes_nothing(record: dict) -> bool:
-    return not record.get("lessons") and all(w == 1.0 for w in record.get("weights", {}).values())
+    return (not record.get("lessons") and all(w == 1.0 for w in record.get("weights", {}).values())
+            and _shift(record) == 0.0)
 
 
 def _same(a: dict | None, b: dict) -> bool:
-    return a is not None and (a.get("weights"), a.get("lessons")) == (b["weights"], b["lessons"])
+    return a is not None and ((a.get("weights"), a.get("lessons"), _shift(a))
+                              == (b["weights"], b["lessons"], _shift(b)))
 
 
 class Learner:
     def __init__(self, journal: Journal, lessons_fn: LessonsFn | None = None,
                  now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
-                 prices_fn: PricesFn | None = None) -> None:
+                 prices_fn: PricesFn | None = None, reflect_fn: ReflectFn | None = None) -> None:
         self.journal = journal
-        self.lessons_fn = lessons_fn
+        self.lessons_fn = lessons_fn  # the older flat lessons; reflect_fn (the notebook) wins
+        self.reflect_fn = reflect_fn
         self.prices_fn = prices_fn  # for grading the analyst's calls; None skips the scorecard
         self.now = now
         self._last_try: datetime | None = None
@@ -294,11 +327,30 @@ class Learner:
         weights = weights_from(stats)
         previous = self.memory("test").lessons
         lessons, lessons_error = previous, None
-        if self.lessons_fn is not None:
+        last = self.journal.memory("test") or {}
+        notebook, reviews = last.get("notebook", []), last.get("reviews", [])
+        reviewed = set(last.get("reviewed", []))
+        if self.reflect_fn is not None:
+            shown = [o.as_dict() for o in results[-MAX_OUTCOMES_SHOWN:]]
+            new = [t for t in shown if t["id"] not in reviewed]
+            if new or not notebook:
+                try:
+                    out = self.reflect_fn(new, shown, notebook, stats, card)
+                    known = {t["id"] for t in shown} | {
+                        x for e in notebook for x in (*e.get("support", []), *e.get("against", []))}
+                    notebook = settle(out.get("notebook", []), known, notebook, self.now().date())
+                    reviews = (reviews + clean_reviews(out.get("reviews", []), {t["id"] for t in new})
+                               )[-MAX_REVIEWS:]
+                    reviewed |= {t["id"] for t in new}
+                except Exception as exc:  # keep the old notebook; retry in a few hours
+                    log.warning("Couldn't get the analyst's review of its trades: %s", exc)
+                    lessons_error = str(exc)[:300]
+            lessons = lessons_for_analyst(notebook) if notebook else previous
+        elif self.lessons_fn is not None:
             shown = [o.as_dict() for o in results[-MAX_OUTCOMES_SHOWN:]]
             try:
                 lessons = [str(x).strip() for x in self.lessons_fn(shown, stats, previous, card)
-                           if str(x).strip()][:MAX_LESSONS]
+                           if str(x).strip()][:FLAT_LESSONS]
             except Exception as exc:  # keep the weights and old lessons; retry in a few hours
                 log.warning("Couldn't get lessons from the analyst: %s", exc)
                 lessons_error = str(exc)[:300]
@@ -307,6 +359,9 @@ class Learner:
             "learned_at": self._last_try.isoformat(timespec="seconds"),
             "weights": weights, "lessons": lessons, "trades": len(results), "wins": wins,
             "lessons_error": lessons_error,
+            "notebook": notebook, "reviews": reviews, "reviewed": sorted(reviewed)[-1000:],
+            # How sure the analyst should be, from its graded calls (kept until there's a new grade).
+            "calibration": (card or {}).get("calibration") or last.get("calibration"),
             "cases": [o.as_dict() for o in results[-MAX_CASES:]],
             "stats": {s: {**st, "label": LABELS.get(s, s)} for s, st in stats.items()},
         }
@@ -359,7 +414,10 @@ def report(journal: Journal, mode: str) -> dict:
                 "trades": record.get("trades", 0), "wins": record.get("wins", 0),
                 "weights": [{"source": s, "label": WEIGHTED[s], "weight": w}
                             for s, w in record.get("weights", {}).items() if s in WEIGHTED],
-                "stats": record.get("stats", {})}
+                "stats": record.get("stats", {}),
+                "notebook": record.get("notebook", []),
+                "reviews": list(reversed(record.get("reviews", [])))[:10],
+                "calibration": record.get("calibration")}
     finished = {m: len(outcomes(journal, m)) for m in ("test", "live")}
     return {
         "active": view(journal.memory(mode)),
