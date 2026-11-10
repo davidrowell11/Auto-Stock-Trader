@@ -170,5 +170,25 @@ class LabServerTests(unittest.TestCase):
             self.assertEqual(c.get("/api/test/lab", headers=AUTH).json()["changes"], [])
 
 
+    def test_your_own_rule_doesnt_block_a_lab_approval_in_the_starter_period(self):
+        from autotrader.server import BotRunner, SettingsStore, create_app
+
+        with tempfile.TemporaryDirectory() as tmp:
+            journal = Journal()
+            store = SettingsStore(f"{tmp}/s.json")
+            brokers = {m: SlowBroker(100_000, {"AAPL": make_bars(uptrend())}) for m in Mode}
+            runners = {m: BotRunner(m, store, journal, threading.RLock(), lambda mode: brokers[mode])
+                       for m in Mode}
+            runners[Mode.TEST].lab = Lab(store, history, lambda: store.settings_for(Mode.TEST, with_lab=False))
+            c = TestClient(create_app(runners, journal, TOKEN, live_enabled=True))
+            # You set the stop yourself, so the lab's wider stop would never apply.
+            store.update(Mode.LIVE, {"my_rules": {"atr_stop_multiple": 2.0},
+                                     "lab_proposed": {"rules": {"atr_stop_multiple": 2.5},
+                                                      "entry": {"change": "x"}}})
+            r = c.post("/api/live/lab", headers=AUTH, json={"decision": "approve"})
+            self.assertEqual(r.status_code, 200, r.text)
+            self.assertEqual(runners[Mode.LIVE].settings.atr_stop_multiple, 2.0)
+
+
 if __name__ == "__main__":
     unittest.main()

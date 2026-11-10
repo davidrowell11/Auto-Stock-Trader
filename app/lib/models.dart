@@ -767,14 +767,17 @@ class SafetyRule {
     required this.step,
     required this.value,
     required this.recommended,
+    double? ifReset,
     required this.looserWhenHigher,
     required this.setBy,
     this.pendingValue,
     this.pendingFrom,
-  });
+  }) : ifReset = ifReset ?? recommended;
   final String key, label, help;
   final String unit; // percent, count or times
   final double low, high, step, value, recommended;
+  // What "Use recommended" for every rule gives: the default, or the lab's value if it has one.
+  final double ifReset;
   final bool looserWhenHigher; // which way takes more risk
   final String setBy; // you, lab or recommended
   final double? pendingValue; // a Live change waiting for the market open
@@ -804,6 +807,7 @@ class SafetyRule {
     step: step,
     value: v,
     recommended: recommended,
+    ifReset: ifReset,
     looserWhenHigher: looserWhenHigher,
     setBy: setBy ?? this.setBy,
     pendingValue: pendingValue,
@@ -822,6 +826,7 @@ class SafetyRule {
       step: _d(j['step']),
       value: _d(j['value']),
       recommended: _d(j['recommended']),
+      ifReset: j['if_reset'] == null ? null : _d(j['if_reset']),
       looserWhenHigher: (j['looser_when'] as String? ?? 'higher') == 'higher',
       setBy: j['set_by'] as String? ?? 'recommended',
       pendingValue: p == null ? null : _dn(p['value']),

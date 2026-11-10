@@ -55,6 +55,11 @@ clearly the stronger of the two.
 If comparing helps (a close competitor, or the sector's fund such as XLK, XLV or XLF), call \
 look_up_stock for the same summary on that symbol, at most twice.
 
+Positive catalysts matter as much as red flags. A strong earnings beat in the last few weeks, \
+especially with raised guidance or analysts raising their estimates, tends to keep lifting the \
+stock for weeks (post-earnings drift), so a jump on such news is a stronger setup, not just an \
+extended one. Unusually heavy short selling, or a jump driven by a short squeeze, fades more often.
+
 Weigh the expert signals provided: open-market insider buying and purchases by members of \
 Congress with strong track records are positives, but they are reported with a delay.
 
@@ -221,12 +226,19 @@ class Analyst:
         and lessons alone (no news search, so it can't look up what happened)."""
         messages = [{"role": "user", "content": (
             "Exam question: judge this past setup from the numbers and lessons only. No news "
-            "search is available. Review this buy candidate:\n\n"
+            "search and no look-ups are available, so don't ask for them: answer by calling "
+            "submit_view straight away. Review this buy candidate:\n\n"
             + json.dumps(candidate, indent=2, default=str))}]
+        args = dict(model=self.quick_model, max_tokens=2000, system=SYSTEM_PROMPT,
+                    messages=messages, tools=[SUBMIT_TOOL])
         try:
-            response = self.client.beta.messages.create(
-                model=self.quick_model, max_tokens=2000, system=SYSTEM_PROMPT, messages=messages,
-                tools=[SUBMIT_TOOL])
+            try:  # make it answer with the tool; some models refuse a forced tool choice
+                response = self.client.beta.messages.create(
+                    **args, tool_choice={"type": "tool", "name": "submit_view"})
+            except Exception as exc:
+                if "tool_choice" not in str(exc):
+                    raise
+                response = self.client.beta.messages.create(**args)
         except Exception as exc:
             raise AnalystUnavailable(plain_error(exc)) from exc
         for block in response.content:

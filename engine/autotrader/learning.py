@@ -259,9 +259,12 @@ def _changes_nothing(record: dict) -> bool:
             and _shift(record) == 0.0)
 
 
+SHIFT_STEP = 0.02  # a smaller change in how sure the analyst should be isn't worth a new proposal
+
+
 def _same(a: dict | None, b: dict) -> bool:
-    return a is not None and ((a.get("weights"), a.get("lessons"), _shift(a))
-                              == (b["weights"], b["lessons"], _shift(b)))
+    return a is not None and ((a.get("weights"), a.get("lessons")) == (b["weights"], b["lessons"])
+                              and abs(_shift(a) - _shift(b)) < SHIFT_STEP)
 
 
 class Learner:
@@ -340,31 +343,35 @@ class Learner:
         lessons, lessons_error = previous, None
         last = self.journal.memory("test") or {}
         notebook, reviews = last.get("notebook", []), last.get("reviews", [])
-        reviewed = set(last.get("reviewed", []))
+        reviewed = list(last.get("reviewed", []))  # oldest first, so trimming drops the oldest
         exam = last.get("exam")
         if self.reflect_fn is not None:
             # Practice trades (replayed from the backtest) first, then the real ones.
             shown = practice + [o.as_dict() for o in results[-MAX_OUTCOMES_SHOWN:]]
-            new = [t for t in shown if t["id"] not in reviewed]
+            seen = set(reviewed)
+            new = [t for t in shown if t["id"] not in seen]
             if new or not notebook:
                 try:
                     out = self.reflect_fn(new, shown, notebook, stats, card)
                     known = {t["id"] for t in shown} | {
                         x for e in notebook for x in (*e.get("support", []), *e.get("against", []))}
+                    # Money is counted from the trades still shown; older evidence still counts
+                    # toward a lesson's status.
                     returns = {t["id"]: t["return"] for t in shown}
-                    for e in notebook:  # older evidence no longer shown keeps its known result
-                        for x in (*e.get("support", []), *e.get("against", [])):
-                            returns.setdefault(x, None)
-                    returns = {k: v for k, v in returns.items() if v is not None}
                     proposed = settle(out.get("notebook", []), known, notebook, self.now().date(),
                                       returns)
                     exam = self._exam(shown, lessons_for_analyst(notebook) if notebook else previous,
                                       lessons_for_analyst(proposed))
+                    done = {r.get("trade") for r in reviews}
+                    reviews = (reviews + [r for r in clean_reviews(
+                        out.get("reviews", []), {t["id"] for t in new}) if r["trade"] not in done]
+                               )[-MAX_REVIEWS:]
                     if exam is None or exam["passed"]:
                         notebook = proposed
-                    reviews = (reviews + clean_reviews(out.get("reviews", []), {t["id"] for t in new})
-                               )[-MAX_REVIEWS:]
-                    reviewed |= {t["id"] for t in new}
+                        reviewed += [t["id"] for t in new]
+                    # A failed exam leaves these trades new, so next week's review weighs them again
+                    # alongside whatever else has finished.
+
                 except Exception as exc:  # keep the old notebook; retry in a few hours
                     log.warning("Couldn't get the analyst's review of its trades: %s", exc)
                     lessons_error = str(exc)[:300]
@@ -382,7 +389,7 @@ class Learner:
             "learned_at": self._last_try.isoformat(timespec="seconds"),
             "weights": weights, "lessons": lessons, "trades": len(results), "wins": wins,
             "lessons_error": lessons_error,
-            "notebook": notebook, "reviews": reviews, "reviewed": sorted(reviewed)[-1000:],
+            "notebook": notebook, "reviews": reviews, "reviewed": reviewed[-1000:],
             "exam": exam, "practice_trades": len(practice),
             # How sure the analyst should be, from its graded calls (kept until there's a new grade).
             "calibration": (card or {}).get("calibration") or last.get("calibration"),

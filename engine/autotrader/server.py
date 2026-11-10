@@ -1005,6 +1005,8 @@ def create_app(runners: dict[Mode, BotRunner], journal: Journal, token: str,
         # Recommended: this server's defaults (including any AUTOTRADER_* settings), before the
         # lab's and your changes.
         standard = r.store.settings_for(r.mode, with_lab=False, with_mine=False)
+        # What "Use recommended" really gives: the defaults plus any lab change, without yours.
+        if_reset = r.store.settings_for(r.mode, with_mine=False)
         locked = r.mode is Mode.LIVE and r.store.starter_active()
         out = []
         for rule in RULES:
@@ -1014,6 +1016,7 @@ def create_app(runners: dict[Mode, BotRunner], journal: Journal, token: str,
                 "key": rule.key, "label": rule.label, "help": rule.help, "unit": rule.unit,
                 "low": rule.low, "high": rule.high, "step": rule.step, "value": value,
                 "recommended": getattr(standard, rule.key), "looser_when": rule.looser_when,
+                "if_reset": getattr(if_reset, rule.key),
                 "set_by": ("you" if rule.key in mine else
                            "lab" if rule.key in lab and lab[rule.key] != getattr(standard, rule.key)
                            else "recommended"),
