@@ -56,6 +56,9 @@ abstract class TraderApi {
   /// Test only: learn from finished trades now instead of waiting for the weekly review.
   Future<Learning> learnNow();
 
+  /// Test only: let the analyst practise on trades replayed from past years. Returns a note.
+  Future<String> practice();
+
   Future<LabReport> lab(String mode);
 
   /// Live only: use (or turn down) the rule change the strategy lab proved in Test.
@@ -261,6 +264,12 @@ class HttpApi implements TraderApi {
   @override
   Future<Learning> learning(String mode) async =>
       Learning.fromJson(await _send('GET', '/api/$mode/learning'));
+
+  @override
+  Future<String> practice() async =>
+      ((await _send('POST', '/api/test/learning/practice')) as Map)['note']
+          as String? ??
+      'Started';
 
   @override
   Future<Learning> decideLearning(bool approve) async => Learning.fromJson(

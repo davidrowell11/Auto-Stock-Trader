@@ -148,6 +148,10 @@ class SettingsStore:
         unknown = [k for k in values if k not in RULES_BY_KEY]
         if unknown:
             raise ValueError(f"Not a rule the app can change: {', '.join(unknown)}")
+        with self._lock:  # decide and save together, so two changes at once can't both pass
+            return self._change_rules(mode, values, now)
+
+    def _change_rules(self, mode: Mode, values: dict, now: datetime) -> dict:
         current = self.settings_for(mode, now=now)
         without_mine = self.settings_for(mode, now=now, with_mine=False)
         live, locked = mode is Mode.LIVE, mode is Mode.LIVE and self.starter_active()
@@ -162,32 +166,32 @@ class SettingsStore:
                 raise ValueError(
                     f"For the first {HARD_LIMITS.live_starter_days} days of Live, rules can only be "
                     f"made safer. {rule.label} can't go from {rule.show(old)} to {rule.show(new)} yet.")
-            plan.append((k, None if v is None else new, later))
+            plan.append((k, None if v is None else new, new, later))
             line = f"{rule.label}: {rule.show(old)} → {rule.show(new)}"
             (waiting if later else applied).append(line)
-        with self._lock:
-            data = self.data.setdefault(mode.value, {})
-            mine = dict(data.get("my_rules") or {})
-            pending = dict(data.get("rules_pending") or {})
+        # The caller holds the lock.
+        data = self.data.setdefault(mode.value, {})
+        mine = dict(data.get("my_rules") or {})
+        pending = dict(data.get("rules_pending") or {})
 
-            def put(k: str, v) -> None:
-                if v is None:
-                    mine.pop(k, None)
-                else:
-                    mine[k] = v
+        def put(k: str, v) -> None:
+            if v is None:
+                mine.pop(k, None)
+            else:
+                mine[k] = v
 
-            for k, p in list(pending.items()):  # fold in changes whose start time has come
-                if datetime.fromisoformat(p["from"]) <= now:
-                    put(k, p.get("value"))
-                    del pending[k]
-            for k, v, later in plan:
-                if later:
-                    pending[k] = {"value": v, "from": opens.isoformat(timespec="seconds")}
-                else:
-                    pending.pop(k, None)
-                    put(k, v)
-            data["my_rules"], data["rules_pending"] = mine, pending
-            self._save()
+        for k, p in list(pending.items()):  # fold in changes whose start time has come
+            if datetime.fromisoformat(p["from"]) <= now:
+                put(k, p.get("value"))
+                del pending[k]
+        for k, v, shown, later in plan:
+            if later:  # "shows": what the rule will be, even for "back to recommended"
+                pending[k] = {"value": v, "shows": shown, "from": opens.isoformat(timespec="seconds")}
+            else:
+                pending.pop(k, None)
+                put(k, v)
+        data["my_rules"], data["rules_pending"] = mine, pending
+        self._save()
         return {"applied": applied, "waiting": waiting,
                 "starts": opens.isoformat(timespec="seconds") if waiting else None}
 
@@ -220,6 +224,8 @@ class SettingsStore:
                 overrides["budget"] = min(budget, cap)
         return load_settings(mode=mode, **overrides)
 
+
+PRACTICE_EVERY = timedelta(days=30)  # practice on replayed trades at most this often (it costs a little)
 
 SESSION_NOTE = {"pre": " (pre-market, limit orders only)", "after": " (after hours, limit orders only)"}
 
@@ -528,7 +534,8 @@ class BotRunner:
         # Tagged by how it's bought now, not how things stood when it was suggested.
         sources = [x for x in a["sources"] if x != "after_hours"] + (["after_hours"] if extended else [])
         self.journal.record_trade(self.mode.value, a["symbol"], "buy", qty, price, order_id,
-                                  [*a["reasons"], "Approved by you in the app"], sources)
+                                  [*a["reasons"], "Approved by you in the app"], sources,
+                                  facts=a.get("facts") or None)
         stop = strategy.initial_stop(price, sig.atr, strategy.stop_multiple(price, s))
         engine.order_placed(a["symbol"], StopState(price, stop, price, qty=qty), "buy", order_id)
         self.journal.set_approval_status(approval_id, "approved")
@@ -846,6 +853,40 @@ def create_app(runners: dict[Mode, BotRunner], journal: Journal, token: str,
             raise HTTPException(409, "Not enough finished trades to learn from yet")
         return learning_report(journal, Mode.TEST.value)
 
+    practising = threading.Lock()
+
+    @app.post("/api/test/learning/practice", **secured)
+    def practice_now():
+        """Let the analyst practise on trades replayed from the last few years (runs in the background)."""
+        test = runners[Mode.TEST]
+        if learner.reflect_fn is None:
+            raise HTTPException(503, "The AI analyst is off (add ANTHROPIC_API_KEY on the server)")
+        if test.lab is None or test.lab.history_fn is None:
+            raise HTTPException(503, "Practice needs price history, which this server can't fetch")
+        last = learner.last_practice()
+        if last is not None and datetime.now(timezone.utc) - last < PRACTICE_EVERY:
+            raise HTTPException(409, f"It practised on {last:%b} {last.day}; it can again "
+                                     f"{PRACTICE_EVERY.days} days after that")
+        if not practising.acquire(blocking=False):
+            raise HTTPException(409, "It's already practising")
+
+        def run() -> None:
+            from .backtest import run_backtest
+            from .learning import outcomes
+            try:
+                replay = Journal()
+                run_backtest(test.lab.history_fn(), test.store.settings_for(Mode.TEST), journal=replay)
+                learner.practice([o.as_dict() for o in outcomes(replay, "test")])
+            except Exception as exc:
+                log.exception("Practice failed")
+                journal.add_event("test", "learning", f"Practice on past trades failed: {str(exc)[:200]}")
+            finally:
+                practising.release()
+
+        threading.Thread(target=run, name="practice", daemon=True).start()
+        return {"started": True, "note": "Replaying the last few years and reviewing the trades. "
+                                         "This takes a few minutes; the results appear under what the bot learned."}
+
     @app.get("/api/ai/spending", **secured)
     def ai_spending():
         """What the AI analyst has cost this month, and the cap."""
@@ -961,6 +1002,9 @@ def create_app(runners: dict[Mode, BotRunner], journal: Journal, token: str,
     def rules_report(r: BotRunner) -> dict:
         s, lab = r.settings, clamp_rules(r.store.get(r.mode).get("lab_rules", {}))
         mine, pending = r.store.my_rules(r.mode), r.store.pending_rules(r.mode)
+        # Recommended: this server's defaults (including any AUTOTRADER_* settings), before the
+        # lab's and your changes.
+        standard = r.store.settings_for(r.mode, with_lab=False, with_mine=False)
         locked = r.mode is Mode.LIVE and r.store.starter_active()
         out = []
         for rule in RULES:
@@ -969,11 +1013,14 @@ def create_app(runners: dict[Mode, BotRunner], journal: Journal, token: str,
             out.append({
                 "key": rule.key, "label": rule.label, "help": rule.help, "unit": rule.unit,
                 "low": rule.low, "high": rule.high, "step": rule.step, "value": value,
-                "recommended": rule.recommended, "looser_when": rule.looser_when,
+                "recommended": getattr(standard, rule.key), "looser_when": rule.looser_when,
                 "set_by": ("you" if rule.key in mine else
-                           "lab" if rule.key in lab and lab[rule.key] != rule.recommended else "recommended"),
+                           "lab" if rule.key in lab and lab[rule.key] != getattr(standard, rule.key)
+                           else "recommended"),
                 "pending": None if p is None else {
-                    "value": rule.recommended if p.get("value") is None else p["value"], "from": p["from"]},
+                    "value": p.get("shows", p.get("value") if p.get("value") is not None
+                                   else getattr(standard, rule.key)),
+                    "from": p["from"]},
             })
         return {"rules": out, "starter_lock": locked,
                 "note": ("Live: safer changes start now; riskier ones start at the next market open."
@@ -998,7 +1045,7 @@ def create_app(runners: dict[Mode, BotRunner], journal: Journal, token: str,
         if result["waiting"]:
             when = datetime.fromisoformat(result["starts"]).astimezone(NEW_YORK)
             journal.add_event(r.mode.value, "settings",
-                              f"Safety rules changing at the market open ({when:%a %b %-d}, 9:30am ET): "
+                              f"Safety rules changing at the market open ({when:%a %b} {when.day}, 9:30am ET): "
                               + "; ".join(result["waiting"]))
         return rules_report(r) | result
 
@@ -1177,11 +1224,13 @@ def main() -> None:
         backup.start()
 
     analyst, ask_fn, ask_stream_fn, lessons_fn, spend = None, None, None, None, None
+    reflect_fn = None
     if os.environ.get("ANTHROPIC_API_KEY"):
         import anthropic
 
         from .analyst import Analyst, ask, ask_stream
         from .learning import claude_lessons
+        from .notebook import claude_reflect
 
         from .spend import DEFAULT_MONTHLY_CAP, MeteredClient, SpendTracker
 
@@ -1192,7 +1241,9 @@ def main() -> None:
         ask_fn = lambda q, ctx: ask(client, q, ctx)  # noqa: E731
         ask_stream_fn = lambda q, ctx: ask_stream(client, q, ctx)  # noqa: E731
         lessons_fn = claude_lessons(client)
-    learner = Learner(journal, lessons_fn)
+        reflect_fn = claude_reflect(client)
+    learner = Learner(journal, lessons_fn, reflect_fn=reflect_fn,
+                      exam_fn=analyst.exam_view if analyst is not None else None)
 
     sec = SecClient()
     set_sector_lookup(sec.sic)  # sectors for scanned stocks, from their SEC industry codes

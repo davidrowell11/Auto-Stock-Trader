@@ -155,6 +155,14 @@ class LabServerTests(unittest.TestCase):
             self.assertEqual(runners[Mode.LIVE].settings.atr_stop_multiple, 2.0)
             live = c.get("/api/live/lab", headers=AUTH).json()
             self.assertEqual(live["proposed"]["changes"][0]["now"], 2.5)
+            # A wider stop takes more risk, so Live's starter period refuses it...
+            r = c.post("/api/live/lab", headers=AUTH, json={"decision": "approve"})
+            self.assertEqual(r.status_code, 409)
+            self.assertIn("only be made safer", r.json()["detail"])
+            self.assertEqual(runners[Mode.LIVE].settings.atr_stop_multiple, 2.0)
+            # ...and allows it once Live has run past the starter period.
+            started = datetime.now(timezone.utc) - timedelta(days=40)
+            store.update(Mode.LIVE, {"first_started": started.isoformat()})
             c.post("/api/live/lab", headers=AUTH, json={"decision": "approve"})
             self.assertEqual(runners[Mode.LIVE].settings.atr_stop_multiple, 2.5)
             c.post("/api/test/lab/undo", headers=AUTH)

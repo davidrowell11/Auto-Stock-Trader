@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 
 log = logging.getLogger("autotrader.analyst")
@@ -39,6 +39,22 @@ If lessons from the bot's past trades are provided, apply them: they come from h
 earlier buys turned out. Similar past trades, if given, are its closest earlier buys of the same \
 kind and how each ended; a poor record there is a reason for more caution, not an automatic skip.
 
+A desk check comes with each candidate: the stock's trend and momentum against its own \
+averages and the market, its volume, the market's mood, and how it would sit with what the bot \
+already holds. Read it the way a professional swing trader would:
+- Strength that lasts: stocks beating the market over 3 months, above a rising 50- and 200-day \
+average, near their 52-week high, tend to keep going. A stock far below its 52-week high is \
+more often a recovery bet than a trend.
+- Extended: well above its 20-day average (several average daily moves) often pulls back \
+soon after buying; that is a reason for lower confidence, not on its own a skip.
+- Volume: a breakout on heavy volume is more trustworthy; a jump on thin volume less so.
+- Market: in a cautious or weak market, fewer trends hold; be stricter.
+- Concentration: another stock in the same sector, or one that moves almost the same way as a \
+holding, adds little and doubles the risk of one bad day. Prefer to skip it unless it is \
+clearly the stronger of the two.
+If comparing helps (a close competitor, or the sector's fund such as XLK, XLV or XLF), call \
+look_up_stock for the same summary on that symbol, at most twice.
+
 Weigh the expert signals provided: open-market insider buying and purchases by members of \
 Congress with strong track records are positives, but they are reported with a delay.
 
@@ -63,6 +79,21 @@ SUBMIT_TOOL = {
         "additionalProperties": False,
     },
 }
+LOOKUP_TOOL = {
+    "name": "look_up_stock",
+    "description": ("The same trend, momentum and volume summary as the desk check, for another "
+                    "stock or fund (for example a competitor or the sector's fund). Use at most twice."),
+    "strict": True,
+    "input_schema": {
+        "type": "object",
+        "properties": {"symbol": {"type": "string", "description": "Ticker, like MSFT or XLK"}},
+        "required": ["symbol"],
+        "additionalProperties": False,
+    },
+}
+MAX_LOOKUPS = 2
+MAX_TURNS = 6  # model turns per review: searches, look-ups, then the view
+
 # The basic search tool. The newer web_search_20260209 (with dynamic filtering) failed on most
 # Opus reviews on 2026-11-04 ("web search failed"), which left the analyst unsure and its
 # confidence low, while Haiku's basic search worked every time.
@@ -103,6 +134,7 @@ class AnalystUnavailable(RuntimeError):
 
 class Analyst:
     supports_quick = True  # the engine may ask the fast model first (Settings.quick_reviews)
+    supports_lookup = True  # the full analyst may look up other stocks (look_up_stock)
 
     def __init__(self, client=None, model: str = MODEL, effort: str = "medium",
                  quick_model: str = QUICK_MODEL) -> None:
@@ -115,27 +147,39 @@ class Analyst:
         self.effort = effort
         self.quick_model = quick_model
 
-    def review(self, candidate: dict, quick: bool = False) -> AnalystView:
+    def review(self, candidate: dict, quick: bool = False,
+               lookup: Callable[[str], dict] | None = None) -> AnalystView:
         """Ask Claude for a view on one buy candidate. Raises AnalystUnavailable on failure.
 
         quick uses the fast, low-cost model; the engine only trusts its clear-cut answers.
+        lookup, if given, lets the full analyst pull the desk-check summary for other symbols.
         """
         if quick:
             extra = {"tools": [QUICK_SEARCH_TOOL, SUBMIT_TOOL]}  # no server-side fallback on this model
             model = self.quick_model
+            lookup = None  # the quick look stays a single cheap pass
         else:
-            extra = {"tools": [WEB_SEARCH_TOOL, SUBMIT_TOOL], "output_config": {"effort": self.effort},
+            tools = [WEB_SEARCH_TOOL, *([LOOKUP_TOOL] if lookup else []), SUBMIT_TOOL]
+            extra = {"tools": tools, "thinking": {"type": "adaptive"},
+                     "output_config": {"effort": self.effort},
                      "betas": ["server-side-fallback-2026-07-01"], "fallbacks": "default"}
             model = self.model
         messages = [{
             "role": "user",
             "content": "Review this buy candidate:\n\n" + json.dumps(candidate, indent=2, default=str),
         }]
-        for _ in range(3):  # allow resuming if the server pauses a long search turn
+        lookups = 0
+        for _ in range(MAX_TURNS):
             try:
                 response = self.client.beta.messages.create(
                     model=model, max_tokens=16000, system=SYSTEM_PROMPT, messages=messages, **extra)
             except Exception as exc:
+                if "thinking" in extra and getattr(exc, "status_code", None) == 400 \
+                        and "thinking" in str(exc).lower():
+                    # A model (or fallback) that won't take adaptive thinking: carry on without it.
+                    log.warning("Analyst thinking not accepted (%s); reviewing without it", exc)
+                    extra = {k: v for k, v in extra.items() if k != "thinking"}
+                    continue
                 raise AnalystUnavailable(plain_error(exc)) from exc
 
             problems = search_problems(response)
@@ -144,16 +188,60 @@ class Analyst:
                             ", ".join(problems))
             if response.stop_reason == "refusal":
                 raise AnalystUnavailable("The analyst declined to review this stock")
-            for block in response.content:
-                if getattr(block, "type", None) == "tool_use" and block.name == "submit_view":
+            calls = [b for b in response.content if getattr(b, "type", None) == "tool_use"]
+            for block in calls:
+                if block.name == "submit_view":
                     view = _to_view(block.input)
                     view.model = model
                     return view
             if response.stop_reason == "pause_turn":
                 messages = [*messages, {"role": "assistant", "content": response.content}]
                 continue
+            if response.stop_reason == "tool_use" and calls:
+                results = []
+                for block in calls:
+                    results.append({"type": "tool_result", "tool_use_id": block.id,
+                                    "content": self._run_tool(block, lookup, lookups)})
+                    lookups += block.name == "look_up_stock"
+                messages = [*messages, {"role": "assistant", "content": response.content},
+                            {"role": "user", "content": results}]
+                continue
             break
         raise AnalystUnavailable("The analyst didn't return a view")
+
+    def exam_view(self, candidate: dict) -> float:
+        """For the learning exam: the fast model's confidence on a past setup, from the numbers
+        and lessons alone (no news search, so it can't look up what happened)."""
+        messages = [{"role": "user", "content": (
+            "Exam question: judge this past setup from the numbers and lessons only. No news "
+            "search is available. Review this buy candidate:\n\n"
+            + json.dumps(candidate, indent=2, default=str))}]
+        try:
+            response = self.client.beta.messages.create(
+                model=self.quick_model, max_tokens=2000, system=SYSTEM_PROMPT, messages=messages,
+                tools=[SUBMIT_TOOL])
+        except Exception as exc:
+            raise AnalystUnavailable(plain_error(exc)) from exc
+        for block in response.content:
+            if getattr(block, "type", None) == "tool_use" and block.name == "submit_view":
+                return _to_view(block.input).confidence
+        raise AnalystUnavailable("No answer to the exam question")
+
+    @staticmethod
+    def _run_tool(block, lookup: Callable[[str], dict] | None, used: int) -> str:
+        """Our side of a tool call. Bad input or a failure comes back as text, never a crash."""
+        if block.name != "look_up_stock" or lookup is None:
+            return f"Unknown tool {block.name}. Call submit_view with your view."
+        if used >= MAX_LOOKUPS:
+            return "No more look-ups for this review. Call submit_view with your view."
+        symbol = str((block.input or {}).get("symbol", "")).strip().upper()
+        if not symbol or len(symbol) > 10 or not symbol.replace(".", "").replace("-", "").isalnum():
+            return "That isn't a ticker symbol."
+        try:
+            return json.dumps(lookup(symbol), default=str)
+        except Exception as exc:  # no data for it, broker hiccup, ...
+            log.info("look_up_stock %s failed: %s", symbol, exc)
+            return f"No data for {symbol}."
 
 
 def plain_error(exc: Exception) -> str:

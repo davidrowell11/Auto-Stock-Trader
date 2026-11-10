@@ -78,6 +78,49 @@ class _SettingsScreenState extends State<SettingsScreen> {
           const SizedBox(height: 12),
           ErrorBox(error!, onRetry: load),
         ],
+        if (test != null) ...[
+          const SectionTitle('Safety rules'),
+          GlassCard(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _rule('Max per stock', pct(test!.maxPositionPct, sign: false)),
+                _rule('Max stocks at once', '${test!.maxOpenPositions}'),
+                _rule(
+                  'Stop buying for the day after a loss of',
+                  pct(test!.dailyLossPct, sign: false),
+                ),
+                _rule(
+                  'Cash always kept aside',
+                  pct(test!.cashReservePct, sign: false),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  'Test shown. You can change these and four more, each within the bot\'s fixed hard limits.',
+                  style: t.bodySmall?.copyWith(color: AppColors.muted),
+                ),
+                const SizedBox(height: 12),
+                Wrap(
+                  spacing: 10,
+                  runSpacing: 8,
+                  children: [
+                    FilledButton.tonalIcon(
+                      onPressed: () => _openRules('test', test!.budget),
+                      icon: const Icon(Icons.tune_rounded),
+                      label: const Text('Edit Test rules'),
+                    ),
+                    if (live != null)
+                      OutlinedButton.icon(
+                        onPressed: () => _openRules('live', live!.budget),
+                        icon: Icon(Icons.tune_rounded, color: AppColors.live),
+                        label: const Text('Edit Live rules'),
+                      ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ],
         if (live != null) ...[
           const SectionTitle('Live (real money)'),
           GlassCard(
@@ -217,47 +260,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     await save('test', {'never_buy': v});
                     await save('live', {'never_buy': v});
                   },
-                ),
-              ],
-            ),
-          ),
-          const SectionTitle('Safety rules'),
-          GlassCard(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                _rule('Max per stock', pct(test!.maxPositionPct, sign: false)),
-                _rule('Max stocks at once', '${test!.maxOpenPositions}'),
-                _rule(
-                  'Stop buying for the day after a loss of',
-                  pct(test!.dailyLossPct, sign: false),
-                ),
-                _rule(
-                  'Cash always kept aside',
-                  pct(test!.cashReservePct, sign: false),
-                ),
-                const SizedBox(height: 6),
-                Text(
-                  'Test shown. You can change these and four more, each within the bot\'s fixed hard limits.',
-                  style: t.bodySmall?.copyWith(color: AppColors.muted),
-                ),
-                const SizedBox(height: 12),
-                Wrap(
-                  spacing: 10,
-                  runSpacing: 8,
-                  children: [
-                    FilledButton.tonalIcon(
-                      onPressed: () => _openRules('test', test!.budget),
-                      icon: const Icon(Icons.tune_rounded),
-                      label: const Text('Edit Test rules'),
-                    ),
-                    if (live != null)
-                      OutlinedButton.icon(
-                        onPressed: () => _openRules('live', live!.budget),
-                        icon: Icon(Icons.tune_rounded, color: AppColors.live),
-                        label: const Text('Edit Live rules'),
-                      ),
-                  ],
                 ),
               ],
             ),

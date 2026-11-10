@@ -25,6 +25,15 @@ class _DashboardState extends State<Dashboard> {
   List<Holding> holdings = [];
   List<EquityPoint> curve = [];
   List<EquityPoint> bench = [];
+  int rangeDays = 0; // 0: all of it
+
+  List<EquityPoint> _since(List<EquityPoint> points) {
+    if (rangeDays == 0 || points.isEmpty) return points;
+    final from = points.last.ts.subtract(Duration(days: rangeDays));
+    final kept = points.where((p) => !p.ts.isBefore(from)).toList();
+    return kept.length > 1 ? kept : points;
+  }
+
   List<ActivityEvent> events = [];
   List<Approval> approvals = [];
   WeeklyReport? weekly;
@@ -284,6 +293,7 @@ class _DashboardState extends State<Dashboard> {
             style: t.displaySmall?.copyWith(
               fontWeight: FontWeight.w800,
               letterSpacing: -1,
+              fontFeatures: const [FontFeature.tabularFigures()],
             ),
           ),
           const SizedBox(height: 6),
@@ -302,7 +312,34 @@ class _DashboardState extends State<Dashboard> {
               ],
             ),
           const SizedBox(height: 14),
-          EquityChart(points: curve, benchmark: bench),
+          AnimatedSwitcher(
+            duration: const Duration(milliseconds: 250),
+            child: EquityChart(
+              key: ValueKey(rangeDays),
+              points: _since(curve),
+              benchmark: _since(bench),
+            ),
+          ),
+          const SizedBox(height: 6),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: SegmentedButton<int>(
+              showSelectedIcon: false,
+              style: const ButtonStyle(
+                visualDensity: VisualDensity.compact,
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
+              segments: const [
+                ButtonSegment(value: 7, label: Text('1W')),
+                ButtonSegment(value: 30, label: Text('1M')),
+                ButtonSegment(value: 90, label: Text('3M')),
+                ButtonSegment(value: 0, label: Text('All')),
+              ],
+              selected: {rangeDays},
+              onSelectionChanged: (v) => setState(() => rangeDays = v.first),
+            ),
+          ),
+          const SizedBox(height: 4),
           Row(
             children: [
               _legendDot(
@@ -1137,6 +1174,10 @@ class _DashboardState extends State<Dashboard> {
                 style: Theme.of(context).textTheme.bodySmall
                     ?.copyWith(color: AppColors.muted),
               ),
+              if (h.stop != null && h.price > 0) ...[
+                const SizedBox(height: 6),
+                _roomToStop(h),
+              ],
             ],
           ),
         ),
@@ -1161,6 +1202,42 @@ class _DashboardState extends State<Dashboard> {
       ],
     ),
   );
+
+  /// How far the price is above its safety stop: a quick read on which holdings are at risk.
+  Widget _roomToStop(Holding h) {
+    final room = ((h.price - h.stop!) / h.price).clamp(0.0, 1.0);
+    final color = room < 0.02
+        ? AppColors.loss
+        : room < 0.04
+        ? AppColors.warn
+        : AppColors.gain;
+    return Semantics(
+      label: '${(room * 100).toStringAsFixed(1)} percent above its safety stop',
+      child: Row(
+        children: [
+          Expanded(
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(3),
+              child: LinearProgressIndicator(
+                value: (room / 0.10).clamp(0.0, 1.0),
+                minHeight: 4,
+                color: color,
+                backgroundColor: color.withValues(alpha: 0.12),
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Text(
+            '${(room * 100).toStringAsFixed(1)}% to stop',
+            style: Theme.of(context).textTheme.labelSmall?.copyWith(
+              color: color,
+              fontFeatures: const [FontFeature.tabularFigures()],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 
   Widget _eventTile(ActivityEvent e) {
     final (icon, color) = switch (e.kind) {

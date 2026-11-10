@@ -28,6 +28,10 @@ void main() {
     expect(find.text('Strategy lab'), findsOneWidget);
     expect(find.text('Were its calls right?'), findsOneWidget);
     expect(find.textContaining('vetoes are helping'), findsOneWidget);
+    expect(find.text('Proven'), findsOneWidget);
+    expect(find.text('Being tested'), findsOneWidget);
+    expect(find.textContaining('How sure it says it is'), findsOneWidget);
+    expect(find.textContaining('passed their exam'), findsOneWidget);
     expect(t.takeException(), isNull);
   });
 
@@ -108,6 +112,7 @@ void main() {
     await t.drag(find.byType(Slider).first, const Offset(120, 0));
     await t.pumpAndSettle();
     expect(find.textContaining('only safer changes'), findsOneWidget);
+    expect(find.text('Only safer changes for now'), findsOneWidget);
     expect(t.takeException(), isNull);
   });
 }

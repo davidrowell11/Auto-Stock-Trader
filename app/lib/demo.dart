@@ -269,6 +269,62 @@ class DemoApi implements TraderApi {
       (label: "Congress members' buys", weight: 1.0),
       (label: "Today's most active stocks", weight: 0.86),
     ],
+    notebook: [
+      NotebookEntry(
+        text: 'Buys more than 8% above their 20-day average were stopped out within two weeks more often than not.',
+        status: 'active',
+        support: 9,
+        against: 3,
+      ),
+      NotebookEntry(
+        text: 'Insider-backed buys beating the market over 3 months held up best.',
+        status: 'active',
+        support: 6,
+        against: 1,
+      ),
+      NotebookEntry(
+        text: 'A second stock from the same sector on the same day added risk without adding return.',
+        status: 'candidate',
+        support: 3,
+        against: 1,
+      ),
+      NotebookEntry(
+        text: 'After-hours buys did worse than regular-hours buys.',
+        status: 'retired',
+        support: 2,
+        against: 4,
+      ),
+    ],
+    reviews: [
+      PostMortem(
+        trade: 'TSLA 2026-11-03',
+        expected: 'A breakout above its 50-day average to keep going.',
+        happened: 'It fell back below the average in 4 days and the trend exit sold it for -3.1%.',
+        cause: 'reasoning',
+        lesson: 'It was 11% above its 20-day average: already stretched.',
+      ),
+      PostMortem(
+        trade: 'JPM 2026-10-20',
+        expected: 'Steady strength after earnings.',
+        happened: 'Up 6.2% when the trailing stop sold it.',
+        cause: 'rules',
+        lesson: '',
+      ),
+    ],
+    calibration: Calibration(
+      calls: 31,
+      said: 0.68,
+      right: 0.58,
+      shift: -0.06,
+      bins: [
+        (label: '50-60%', calls: 9, said: 0.56, right: 0.56),
+        (label: '60-70%', calls: 12, said: 0.65, right: 0.58),
+        (label: '70% or more', calls: 10, said: 0.78, right: 0.6),
+      ],
+      note: 'A bit overconfident: its calls average 68% sure but 58% came good, so its confidence is adjusted by -6 points before the bar is applied.',
+    ),
+    exam: ExamResult(cases: 12, oldScore: 0.241, newScore: 0.226, passed: true),
+    practiceTrades: 80,
   );
   bool _liveApproved = false;
 
@@ -300,6 +356,10 @@ class DemoApi implements TraderApi {
 
   @override
   Future<Learning> learnNow() => learning('test');
+
+  @override
+  Future<String> practice() async =>
+      'Replaying the last few years and reviewing the trades. This takes a few minutes.';
 
   bool _labApproved = false;
   double _aiCap = 20;
@@ -450,7 +510,7 @@ class DemoApi implements TraderApi {
     (
       'atr_stop_multiple',
       'Safety stop distance',
-      'How far below the price the safety stop sits, in average daily moves. A stop is never more than 8% below the buy.',
+      'How far below the price the safety stop sits, in average daily moves. Wider stops sell less often but lose more when hit; a stop is never more than 8% below the buy.',
       1.5,
       3.5,
       0.25,
