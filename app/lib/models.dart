@@ -476,15 +476,20 @@ class NotebookEntry {
     required this.status,
     required this.support,
     required this.against,
+    this.avgReturn,
   });
   final String text;
   final String status; // active, candidate or retired
   final int support, against;
+
+  /// What the trades behind it made on average (null when unknown).
+  final double? avgReturn;
   factory NotebookEntry.fromJson(Map<String, dynamic> j) => NotebookEntry(
     text: j['text'] as String,
     status: j['status'] as String? ?? 'candidate',
     support: (j['support'] as List? ?? []).length,
     against: (j['against'] as List? ?? []).length,
+    avgReturn: _dn((j['money'] as Map?)?['avg_return']),
   );
 }
 
@@ -544,16 +549,23 @@ class ExamResult {
     required this.oldScore,
     required this.newScore,
     required this.passed,
+    this.oldMoney,
+    this.newMoney,
   });
   final int cases;
-  final double oldScore,
-      newScore; // lower is better (0 perfect, 0.25 a coin flip)
+  // Lower is better (0 perfect, 0.25 a coin flip).
+  final double oldScore, newScore;
   final bool passed;
+
+  /// Total return of the past trades it would have let through, before and after.
+  final double? oldMoney, newMoney;
   factory ExamResult.fromJson(Map<String, dynamic> j) => ExamResult(
     cases: (j['cases'] as num?)?.toInt() ?? 0,
     oldScore: _d(j['old_score']),
     newScore: _d(j['new_score']),
     passed: j['passed'] as bool? ?? true,
+    oldMoney: _dn(j['old_money']),
+    newMoney: _dn(j['new_money']),
   );
 }
 

@@ -54,8 +54,8 @@ from datetime import date, datetime, timedelta, timezone
 
 from . import calibration, scorecard
 from .journal import TRIM, Journal
-from .notebook import (EXAM_MIN_CASES, EXAM_TOLERANCE, MAX_REVIEWS, ExamFn, ReflectFn,
-                       clean_reviews, exam_cases, lessons_for_analyst, settle, sit_exam, trade_id)
+from .notebook import (EXAM_MIN_CASES, MAX_REVIEWS, ExamFn, ReflectFn, clean_reviews,
+                       exam_cases, exam_passed, lessons_for_analyst, settle, sit_exam, trade_id)
 
 log = logging.getLogger("autotrader.learning")
 
@@ -351,7 +351,13 @@ class Learner:
                     out = self.reflect_fn(new, shown, notebook, stats, card)
                     known = {t["id"] for t in shown} | {
                         x for e in notebook for x in (*e.get("support", []), *e.get("against", []))}
-                    proposed = settle(out.get("notebook", []), known, notebook, self.now().date())
+                    returns = {t["id"]: t["return"] for t in shown}
+                    for e in notebook:  # older evidence no longer shown keeps its known result
+                        for x in (*e.get("support", []), *e.get("against", [])):
+                            returns.setdefault(x, None)
+                    returns = {k: v for k, v in returns.items() if v is not None}
+                    proposed = settle(out.get("notebook", []), known, notebook, self.now().date(),
+                                      returns)
                     exam = self._exam(shown, lessons_for_analyst(notebook) if notebook else previous,
                                       lessons_for_analyst(proposed))
                     if exam is None or exam["passed"]:
@@ -412,12 +418,13 @@ class Learner:
         before, after = sit_exam(self.exam_fn, cases, old), sit_exam(self.exam_fn, cases, new)
         if before is None or after is None:
             return None  # too many questions failed: don't block learning on an outage
-        passed = after <= before + EXAM_TOLERANCE
+        passed = exam_passed(before, after)
         if not passed:
             self.journal.add_event("test", "learning",
                                    "The analyst's new lessons made its calls on past trades worse, "
                                    "so it kept its old ones")
-        return {"cases": len(cases), "old_score": before, "new_score": after, "passed": passed,
+        return {"cases": len(cases), "old_score": before["brier"], "new_score": after["brier"],
+                "old_money": before["money"], "new_money": after["money"], "passed": passed,
                 "on": self.now().date().isoformat()}
 
     def practice(self, replayed: list[dict]) -> dict | None:

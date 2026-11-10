@@ -99,6 +99,36 @@ def finished(j, symbol, buy, sell, facts=None):
     j.record_trade("test", symbol, "sell", 1, sell, None, ["Hit stop"])
 
 
+class MoneyTests(unittest.TestCase):
+    def test_a_lesson_its_own_money_contradicts_cant_be_proven(self):
+        ids = [f"T{i} 2026-10-01" for i in range(6)]
+        winners = {i: 0.04 for i in ids}
+        got = settle([{"text": "Avoid these", "action": "avoid", "support": ids, "against": []}],
+                     set(ids), [], TODAY_D, winners)
+        self.assertEqual(got[0]["status"], "candidate")  # "avoid" but they made money
+        got = settle([{"text": "Favour these", "action": "favour", "support": ids, "against": []}],
+                     set(ids), [], TODAY_D, winners)
+        self.assertEqual(got[0]["status"], "active")
+        self.assertEqual(got[0]["money"], {"trades": 6, "avg_return": 0.04, "total_return": 0.24})
+
+    def test_lessons_with_the_most_money_behind_them_come_first(self):
+        big = [f"B{i} 2026-10-01" for i in range(5)]
+        small = [f"S{i} 2026-10-01" for i in range(6)]
+        returns = {**{i: -0.10 for i in big}, **{i: -0.01 for i in small}}
+        got = settle([{"text": "Small", "action": "avoid", "support": small, "against": []},
+                      {"text": "Big", "action": "avoid", "support": big, "against": []}],
+                     set(big + small), [], TODAY_D, returns)
+        self.assertEqual([e["text"] for e in got], ["Big", "Small"])
+        self.assertTrue(lessons_for_analyst(got)[0].endswith("averaged -10.0%]"))
+
+    def test_the_exam_goes_by_money_first(self):
+        from autotrader.notebook import exam_passed
+        self.assertTrue(exam_passed({"money": 0.1, "brier": 0.2}, {"money": 0.2, "brier": 0.3}))
+        self.assertFalse(exam_passed({"money": 0.2, "brier": 0.3}, {"money": 0.1, "brier": 0.1}))
+        self.assertTrue(exam_passed({"money": 0.1, "brier": 0.2}, {"money": 0.1, "brier": 0.205}))
+        self.assertFalse(exam_passed({"money": 0.1, "brier": 0.2}, {"money": 0.1, "brier": 0.25}))
+
+
 class LearnerNotebookTests(unittest.TestCase):
     def setUp(self):
         self.j = Journal()
@@ -142,7 +172,8 @@ class LearnerNotebookTests(unittest.TestCase):
         record = self.learner.learn()
         self.assertEqual(len(self.calls[1][0]), 3)  # only the new ones to review
         self.assertEqual(record["notebook"][0]["status"], "active")  # 6 trades back it now
-        self.assertEqual(record["lessons"], ["Stretched buys get stopped out"])
+        self.assertEqual(record["lessons"],
+                         ["Stretched buys get stopped out [6 trades behind it averaged -5.0%]"])
         shown = report(self.j, "test")["active"]
         self.assertEqual(len(shown["reviews"]), 6)
         self.assertEqual(shown["notebook"][0]["status"], "active")
@@ -211,8 +242,9 @@ class ExamAndPracticeTests(unittest.TestCase):
 
     def test_brier_score_and_failed_questions(self):
         cases = [{"facts": {"x": 1}, "return": 0.1}, {"facts": {"x": 1}, "return": -0.1}]
-        self.assertEqual(self.sit_exam(lambda c: 1.0, cases[:1], []), 0.0)
-        self.assertEqual(self.sit_exam(lambda c: 0.5, cases, []), 0.25)
+        self.assertEqual(self.sit_exam(lambda c: 1.0, cases[:1], []), {"brier": 0.0, "money": 0.1})
+        # 50% is under the 55% bar: nothing let through, so no money either way.
+        self.assertEqual(self.sit_exam(lambda c: 0.5, cases, []), {"brier": 0.25, "money": 0.0})
 
         def broken(_):
             raise RuntimeError("down")

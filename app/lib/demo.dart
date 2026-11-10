@@ -275,12 +275,14 @@ class DemoApi implements TraderApi {
         status: 'active',
         support: 9,
         against: 3,
+        avgReturn: -0.034,
       ),
       NotebookEntry(
         text: 'Insider-backed buys beating the market over 3 months held up best.',
         status: 'active',
         support: 6,
         against: 1,
+        avgReturn: 0.052,
       ),
       NotebookEntry(
         text: 'A second stock from the same sector on the same day added risk without adding return.',
@@ -323,7 +325,14 @@ class DemoApi implements TraderApi {
       ],
       note: 'A bit overconfident: its calls average 68% sure but 58% came good, so its confidence is adjusted by -6 points before the bar is applied.',
     ),
-    exam: ExamResult(cases: 12, oldScore: 0.241, newScore: 0.226, passed: true),
+    exam: ExamResult(
+      cases: 12,
+      oldScore: 0.241,
+      newScore: 0.226,
+      passed: true,
+      oldMoney: 0.08,
+      newMoney: 0.19,
+    ),
     practiceTrades: 80,
   );
   bool _liveApproved = false;
