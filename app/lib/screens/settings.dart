@@ -160,9 +160,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  'The bot works 4am to 8pm New York time on weekdays. Outside regular hours '
-                  '(9:30am to 4pm) it only uses limit orders and sells to protect your money. '
-                  'Penny stocks are only bought in regular hours.',
+                  'Test works from Sunday 8pm to Friday 8pm New York time, overnight included. '
+                  'Live works 4am to 8pm on weekdays. Outside regular hours (9:30am to 4pm) the '
+                  'bot only uses limit orders and sells to protect your money. Overnight (8pm to '
+                  '4am) it only trades stocks your broker trades overnight, and buys at most one '
+                  'new stock a night. Penny stocks are only bought in regular hours.',
                   style: t.bodySmall?.copyWith(color: AppColors.muted),
                 ),
                 SwitchListTile(
@@ -172,6 +174,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   value: test!.afterHoursBuys,
                   activeThumbColor: AppColors.test,
                   onChanged: (v) => save('test', {'after_hours_buys': v}),
+                ),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Test: buy overnight'),
+                  subtitle: const Text(
+                    'New buys from 8pm to 4am. The thinnest trading of the day, so the bot '
+                    'learns from these buys separately. Test only for now.',
+                  ),
+                  value: test!.overnightBuys,
+                  activeThumbColor: AppColors.test,
+                  onChanged: (v) => save('test', {'overnight_buys': v}),
                 ),
                 const Divider(),
                 SwitchListTile(

@@ -79,6 +79,40 @@ class AfterHoursEngineTests(unittest.TestCase):
         self.assertEqual(buy.qty, int(buy.qty))  # no fractional shares outside regular hours
         self.assertAlmostEqual(buy.limit_price, round(self.broker.price("AAPL") * 1.005, 2))
 
+    def test_overnight_buys_only_stocks_traded_overnight(self):
+        report = engine(self.broker, self.journal, "overnight", overnight_buys=True).run_cycle()
+        self.assertEqual([o for o in self.broker.orders if o.side is Side.BUY], [])
+        self.assertTrue(any("not traded overnight" in x for x in report.skipped))
+        self.broker.assets["AAPL"] = Asset("AAPL", exchange="NASDAQ", overnight_tradable=True)
+        engine(self.broker, self.journal, "overnight", overnight_buys=True).run_cycle()
+        buy = self.broker.orders[-1]
+        self.assertIs(buy.side, Side.BUY)
+        self.assertTrue(buy.extended_hours)
+        self.assertIsNotNone(buy.limit_price)
+        self.assertIn("overnight", self.journal.trades("test")[-1]["sources"])
+
+    def test_one_new_buy_a_night(self):
+        bars = {s: make_bars(uptrend()) for s in ("AAPL", "MSFT")}
+        assets = {s: Asset(s, exchange="NASDAQ", overnight_tradable=True) for s in bars}
+        broker = SlowBroker(100_000, bars, assets=assets)
+        e = engine(broker, self.journal, "overnight", overnight_buys=True, max_new_buys_per_day=3)
+        e.run_cycle()
+        e.run_cycle()
+        self.assertEqual(len([o for o in broker.orders if o.side is Side.BUY]), 1)
+
+    def test_overnight_buying_off_waits_for_4am(self):
+        report = engine(self.broker, self.journal, "overnight", overnight_buys=False).run_cycle()
+        self.assertEqual(self.broker.orders, [])
+        self.assertIn("4am", report.halted)
+
+    def test_overnight_sell_waits_when_the_stock_isnt_traded_overnight(self):
+        self.own_aapl()
+        crash(self.broker)
+        before = len(self.broker.orders)
+        report = engine(self.broker, self.journal, "overnight").run_cycle()
+        self.assertEqual(len(self.broker.orders), before)
+        self.assertTrue(any("waits for 4am" in x for x in report.skipped))
+
     def test_no_penny_stock_buys_after_hours(self):
         closes = [c / 60 for c in uptrend()]  # same trend, priced under $5
         broker = SlowBroker(100_000, {"PENY": make_bars(closes), MARKET: make_bars(uptrend())})
@@ -125,7 +159,7 @@ class AlpacaSessionTests(unittest.TestCase):
     def broker(self, is_open, days):
         b = alpaca_broker.AlpacaBroker.__new__(alpaca_broker.AlpacaBroker)
         b.trading = FakeTrading(is_open, days)
-        b._calendar_day, b._calendar = None, None
+        b._calendar = {}
         return b
 
     def at(self, b, hour, minute=0):
@@ -139,15 +173,47 @@ class AlpacaSessionTests(unittest.TestCase):
         day = SimpleNamespace(date=self.DAY, open=datetime(2026, 11, 3, 9, 30),
                               close=datetime(2026, 11, 3, 16, 0))
         b = self.broker(False, [day])
-        self.assertEqual(self.at(b, 3, 59), "closed")
+        self.assertEqual(self.at(b, 3, 59), "overnight")  # the overnight session before Nov 3
         self.assertEqual(self.at(b, 4), "pre")
         self.assertEqual(self.at(b, 9, 29), "pre")
         self.assertEqual(self.at(b, 16), "after")
         self.assertEqual(self.at(b, 19, 59), "after")
-        self.assertEqual(self.at(b, 20), "closed")
-        self.assertEqual(b.trading.calendar_calls, 1)  # looked up once a day
+        self.assertEqual(self.at(b, 20), "closed")  # Nov 4 isn't a trading day in this calendar
+        self.assertEqual(b.trading.calendar_calls, 2)  # each day looked up once
         b.trading.is_open = True
         self.assertEqual(self.at(b, 11), "regular")
+
+    def test_overnight_runs_before_trading_days_only(self):
+        tomorrow = SimpleNamespace(date=date(2026, 11, 4), open=datetime(2026, 11, 4, 9, 30),
+                                   close=datetime(2026, 11, 4, 16, 0))
+        self.assertEqual(self.at(self.broker(False, [tomorrow]), 21), "overnight")
+        self.assertEqual(self.at(self.broker(False, []), 21), "closed")  # holiday tomorrow
+        self.assertEqual(self.at(self.broker(False, []), 2), "closed")  # holiday today
+
+    def test_the_newer_trade_wins_overnight(self):
+        from autotrader.broker.alpaca_broker import AlpacaBroker
+        b = AlpacaBroker.__new__(AlpacaBroker)
+        b.data_feed, b._no_overnight_feed = "iex", None
+        friday_night = datetime(2026, 11, 6, 19, 59, tzinfo=alpaca_broker.NEW_YORK)
+        friday_morning = datetime(2026, 11, 6, 3, 59, tzinfo=alpaca_broker.NEW_YORK)
+        feeds = {"iex": {"AAPL": SimpleNamespace(price=110.0, timestamp=friday_night),
+                         "XYZ": SimpleNamespace(price=50.0, timestamp=friday_night)},
+                 "overnight": {"AAPL": SimpleNamespace(price=100.0, timestamp=friday_morning),
+                               "MSFT": SimpleNamespace(price=400.0, timestamp=friday_morning)}}
+        b.data = SimpleNamespace(get_stock_latest_trade=lambda req: feeds[str(req.feed.value
+                                 if hasattr(req.feed, "value") else req.feed)])
+        sunday = datetime(2026, 11, 8, 20, 5, tzinfo=alpaca_broker.NEW_YORK)
+        with mock.patch.object(alpaca_broker, "datetime", wraps=datetime) as dt:
+            dt.now.return_value = sunday
+            got = b.latest_prices(["AAPL", "MSFT", "XYZ"])
+        self.assertEqual(got, {"AAPL": 110.0, "MSFT": 400.0, "XYZ": 50.0})
+
+    def test_overnight_tradable_attribute(self):
+        ok = SimpleNamespace(attributes=["fractional_eh_enabled", "overnight_tradable"])
+        halted = SimpleNamespace(attributes=["overnight_tradable", "overnight_halted"])
+        self.assertTrue(alpaca_broker._overnight_tradable(ok))
+        self.assertFalse(alpaca_broker._overnight_tradable(halted))
+        self.assertFalse(alpaca_broker._overnight_tradable(SimpleNamespace(attributes=None)))
 
     def test_early_close_and_holidays(self):
         early = SimpleNamespace(date=self.DAY, open=datetime(2026, 11, 3, 9, 30),
@@ -262,7 +328,22 @@ class AfterHoursServerTests(unittest.TestCase):
         self.c.post("/api/test/start", headers=AUTH)
         r._pause = lambda seconds: r._stop.set()  # one pass of the loop
         r.loop()
-        self.assertIn("4am to 8pm", self.c.get("/api/test/live", headers=AUTH).json()["now"])
+        self.assertIn("Sunday 8pm to Friday 8pm", self.c.get("/api/test/live", headers=AUTH).json()["now"])
+
+    def test_overnight_buying_is_test_only(self):
+        for m in Mode:
+            self.brokers[m].session = "overnight"
+        self.assertEqual(self.runners[Mode.TEST].session(), "overnight")
+        self.assertEqual(self.runners[Mode.LIVE].session(), "closed")  # Live sits overnight out
+        self.assertTrue(self.store.settings_for(Mode.TEST).overnight_buys)
+        self.assertFalse(self.store.settings_for(Mode.LIVE).overnight_buys)
+        r = self.c.put("/api/live/settings", headers=AUTH, json={"overnight_buys": True})
+        self.assertEqual(r.status_code, 400)
+        self.store.update(Mode.LIVE, {"overnight_buys": True})  # even if the file says so
+        self.assertFalse(self.store.settings_for(Mode.LIVE).overnight_buys)
+        r = self.c.put("/api/test/settings", headers=AUTH, json={"overnight_buys": False})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertFalse(self.store.settings_for(Mode.TEST).overnight_buys)
 
     def test_after_hours_check_runs_and_says_so(self):
         r = self.runners[Mode.TEST]

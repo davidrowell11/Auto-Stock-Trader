@@ -30,7 +30,8 @@ class Broker(ABC):
     def is_market_open(self) -> bool: ...
 
     def market_session(self) -> str:
-        """"regular" (9:30am-4pm New York time), "pre" (4am-9:30am), "after" (4pm-8pm) or "closed"."""
+        """"regular" (9:30am-4pm New York time), "pre" (4am-9:30am), "after" (4pm-8pm),
+        "overnight" (8pm-4am, Sunday night to Friday morning) or "closed"."""
         return "regular" if self.is_market_open() else "closed"
 
     def latest_prices(self, symbols: Iterable[str]) -> dict[str, float]:

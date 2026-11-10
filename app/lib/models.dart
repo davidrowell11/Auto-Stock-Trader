@@ -43,7 +43,7 @@ class Summary {
   final double? otherHoldings;
   final int? positions;
   final bool? marketOpen;
-  final String? session; // regular, pre (4am-9:30am), after (4pm-8pm) or closed
+  final String? session; // regular, pre (4am-9:30am), after (4pm-8pm), overnight (8pm-4am) or closed
   final String? mood; // market mood note from the last cycle
   final String? moodLevel; // calm, cautious, risk-off or unknown
   final String? buyingPaused; // set when Live stopped itself for safety
@@ -345,12 +345,15 @@ class BotSettings {
     required this.dailyLossPct,
     required this.cashReservePct,
     this.afterHoursBuys = false,
+    this.overnightBuys = false,
     this.quickReviews = false,
   });
   final double? budget;
   final bool quickReviews; // a fast, cheaper model reviews first; close calls get the full analyst
   final bool approveMode;
   final bool afterHoursBuys; // new buys in pre-market and after hours
+  final bool
+  overnightBuys; // new buys 8pm-4am New York time (Test only for now)
   final List<String> alwaysWatch, neverBuy;
   final double maxPositionPct, dailyLossPct, cashReservePct;
   final int maxOpenPositions;
@@ -364,6 +367,7 @@ class BotSettings {
     dailyLossPct: _d(j['daily_loss_pct']),
     cashReservePct: _d(j['cash_reserve_pct']),
     afterHoursBuys: j['after_hours_buys'] as bool? ?? false,
+    overnightBuys: j['overnight_buys'] as bool? ?? false,
     quickReviews: j['quick_reviews'] as bool? ?? false,
   );
 }

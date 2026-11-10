@@ -109,6 +109,9 @@ class Settings:
     # New buys in pre-market (4am-9:30am) and after hours (4pm-8pm). Selling to protect
     # holdings happens in those hours either way. On for Test, off for Live until switched on.
     after_hours_buys: bool = False
+    # New buys in the overnight session (8pm-4am New York time, Sunday night to Friday morning),
+    # only in stocks the broker trades overnight. Test only for now (David, 2026-11-10).
+    overnight_buys: bool = False
     # Cheaper AI reviews: a fast, low-cost Claude model reviews first and the full analyst only
     # sees the close calls (and every penny stock). On for Test, off for Live until switched on.
     quick_reviews: bool = False

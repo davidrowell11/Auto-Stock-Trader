@@ -10,6 +10,7 @@ Test key can never place a real-money trade:
 
 from __future__ import annotations
 
+import logging
 import os
 import threading
 import time as clock
@@ -22,6 +23,8 @@ from ..config import Mode
 from ..models import Account, Asset, Bar, OrderRequest, OrderUpdate, Position, Side
 from .base import Broker
 
+
+log = logging.getLogger("autotrader.broker")
 
 NEW_YORK = ZoneInfo("America/New_York")
 LOOKUP_WAITS = (0.0, 1.0, 2.0)  # seconds before each look for an order whose reply was lost
@@ -60,8 +63,8 @@ class AlpacaBroker(Broker):
         self.data_feed = data_feed  # "iex" is free; "sip" needs a paid plan
         self.trading = TradingClient(key, secret, paper=(mode is Mode.TEST))
         self.data = StockHistoricalDataClient(key, secret)
-        self._calendar_day = None
-        self._calendar: tuple[datetime, datetime] | None = None
+        self._calendar: dict = {}  # day -> (open, close) or None, looked up once each
+        self._no_overnight_feed = None  # the day the overnight price feed was found unavailable
         # A year of daily prices per stock, fetched once a day; each check then only fetches
         # the last few days. Scanning hundreds of stocks every few minutes stays quick.
         self._bars: dict[str, tuple[object, int, list[Bar]]] = {}  # symbol -> (day, depth, bars)
@@ -143,7 +146,8 @@ class AlpacaBroker(Broker):
         exchange = getattr(a.exchange, "value", str(a.exchange))
         asset = Asset(symbol=a.symbol, exchange=exchange, tradable=bool(a.tradable),
                       fractionable=bool(getattr(a, "fractionable", False)),
-                      name=str(getattr(a, "name", "") or ""))
+                      name=str(getattr(a, "name", "") or ""),
+                      overnight_tradable=_overnight_tradable(a))
         self._assets[symbol] = (today, asset)
         return asset
 
@@ -211,11 +215,17 @@ class AlpacaBroker(Broker):
         if self.is_market_open():
             return "regular"
         now = datetime.now(NEW_YORK)
+        t = now.replace(tzinfo=None)
+        # Overnight (8pm-4am) belongs to the next trading day: it runs Sunday night to Friday
+        # morning and not on the evening before a market holiday.
+        if t.time() >= EXTENDED_END:
+            return "overnight" if self._trading_day(t.date() + timedelta(days=1)) else "closed"
+        if t.time() < EXTENDED_START:
+            return "overnight" if self._trading_day(t.date()) else "closed"
         day = self._trading_day(now.date())
         if day is None:  # weekend or market holiday: no extended hours either
             return "closed"
         open_, close = day
-        t = now.replace(tzinfo=None)
         if datetime.combine(t.date(), EXTENDED_START) <= t < open_:
             return "pre"
         if close <= t < datetime.combine(t.date(), EXTENDED_END):
@@ -227,14 +237,15 @@ class AlpacaBroker(Broker):
 
         Looked up once a day; it knows holidays and early-close days.
         """
-        if self._calendar_day != day:
+        if day not in self._calendar:
             from alpaca.trading.requests import GetCalendarRequest
 
             days = self.trading.get_calendar(GetCalendarRequest(start=day, end=day))
             hit = next((d for d in days if d.date == day), None)
-            self._calendar = None if hit is None else (_naive_ny(hit.open), _naive_ny(hit.close))
-            self._calendar_day = day
-        return self._calendar
+            if len(self._calendar) > 30:
+                self._calendar.clear()
+            self._calendar[day] = None if hit is None else (_naive_ny(hit.open), _naive_ny(hit.close))
+        return self._calendar[day]
 
     def latest_prices(self, symbols: Iterable[str]) -> dict[str, float]:
         from alpaca.data.requests import StockLatestTradeRequest
@@ -244,4 +255,32 @@ class AlpacaBroker(Broker):
             return {}
         trades = self.data.get_stock_latest_trade(
             StockLatestTradeRequest(symbol_or_symbols=symbols, feed=self.data_feed))
-        return {s: float(t.price) for s, t in trades.items() if t is not None and t.price}
+        best = {s: x for s, x in trades.items() if x is not None and x.price}
+        now = datetime.now(NEW_YORK)
+        t = now.time()
+        if (t >= EXTENDED_END or t < EXTENDED_START) and self._no_overnight_feed != now.date():
+            # Overnight trades come from their own feed. Per stock, the newer trade wins, so an
+            # old overnight print never beats this evening's after-hours one.
+            try:
+                night = self.data.get_stock_latest_trade(
+                    StockLatestTradeRequest(symbol_or_symbols=symbols, feed="overnight"))
+            except Exception as exc:  # not on this data plan: don't ask again today
+                log.info("No overnight prices today (%s); using the usual feed", exc)
+                self._no_overnight_feed = now.date()
+                night = {}
+            for s, x in night.items():
+                if x is None or not x.price:
+                    continue
+                old = best.get(s)
+                if old is None or (getattr(x, "timestamp", None) and getattr(old, "timestamp", None)
+                                   and x.timestamp > old.timestamp):
+                    best[s] = x
+        return {s: float(x.price) for s, x in best.items()}
+
+
+def _overnight_tradable(asset) -> bool:
+    """Alpaca lists "overnight_tradable" in an asset's attributes (and "overnight_halted" while
+    it is paused, for example during a corporate action)."""
+    attrs = {str(getattr(x, "value", x)).lower() for x in (getattr(asset, "attributes", None) or [])}
+    return "overnight_tradable" in attrs and "overnight_halted" not in attrs
+

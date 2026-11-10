@@ -261,6 +261,7 @@ class _DashboardState extends State<Dashboard> {
             switch (s.session) {
               'pre' => 'Running · pre-market',
               'after' => 'Running · after hours',
+              'overnight' => 'Running · overnight',
               'closed' => 'Running · market closed',
               _ =>
                 s.marketOpen == false ? 'Running · market closed' : 'Running',
