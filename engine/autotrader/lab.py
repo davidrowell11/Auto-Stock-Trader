@@ -32,7 +32,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 
 from .backtest import BacktestResult, run_backtest
-from .config import HARD_LIMITS, Mode, Settings
+from .config import HARD_LIMITS, RULES_BY_KEY, Mode, Settings
 from .journal import Journal
 from .learning import outcomes
 from .strategy import MIN_HISTORY
@@ -172,6 +172,11 @@ class Lab:
     def _update(self, mode: str, changes: dict) -> None:
         self.store.update(Mode(mode), changes)
 
+    def _fixed(self, mode: str) -> set[str]:
+        """Rules you set yourself in the app for this mode; the lab leaves them alone."""
+        mine = getattr(self.store, "my_rules", None)
+        return set(mine(Mode(mode))) if mine else set()
+
     def log(self) -> list[dict]:
         return list(self._get("test").get("lab_log", []))
 
@@ -193,10 +198,10 @@ class Lab:
 
     def _run(self) -> dict | None:
         now = self._last_try = self.now()
-        rules = self.rules("test")
+        fixed = self._fixed("test")
+        # base() already has your rules; keep the lab's own values off the ones you set.
+        rules = {k: v for k, v in self.rules("test").items() if k not in fixed}
         tried = {e["idea"]: e["ts"] for e in self.log() if not e.get("kept")}
-        mine = getattr(self.store, "my_rules", None)
-        fixed = set(mine(Mode.TEST)) if mine else set()
         idea = next_idea(rules, self.base(), tried, now, fixed)
         if idea is None:
             return None
@@ -233,13 +238,17 @@ class Lab:
                              + (f"{after[k]:+.1%}" if k in after else "not bought") for k in fixed]
         entry["kept"] = True
         entry["verdict"] = "Passed every check; Test uses it now"
-        new_rules = {**rules, idea.knob: idea.value}
+        new_rules = {**self.rules("test"), idea.knob: idea.value}
         self._update("test", {"lab_rules": new_rules})
+        self.events("test", f"Strategy lab kept a rule change: {entry['change']}")
+        if idea.knob in self._fixed("live"):
+            self.events("live", f"The strategy lab found a better rule in Test ({entry['change']}), "
+                                "but you set that rule yourself for Live, so Live keeps yours.")
+            return self._record(entry)
         # Live is offered just this one change on top of its own rules, never a bundle that
         # sneaks back a change you turned down before.
         live_rules = {**self.rules("live"), idea.knob: idea.value}
         self._update("live", {"lab_proposed": {"rules": live_rules, "entry": entry}})
-        self.events("test", f"Strategy lab kept a rule change: {entry['change']}")
         self.events("live", f"The strategy lab found a better rule in Test ({entry['change']}). "
                             "Review it in the app before Live uses it.")
         return self._record(entry)
@@ -256,6 +265,17 @@ class Lab:
         proposed = self._get("live").get("lab_proposed")
         if not proposed:
             raise LookupError("Nothing is waiting for approval")
+        starter = getattr(self.store, "starter_active", None)
+        if starter is not None and starter():
+            # Live's first days only allow safer rules, the same as changes made in the app.
+            live = self.store.settings_for(Mode.LIVE)
+            for k, v in clamp_rules(proposed["rules"]).items():
+                rule = RULES_BY_KEY.get(k)
+                if rule is not None and rule.looser(getattr(live, k), v):
+                    raise LookupError(
+                        f"For the first {HARD_LIMITS.live_starter_days} days of Live, rules can only "
+                        f"be made safer, and this change ({rule.label}) takes more risk. "
+                        "Try again after the starter period.")
         self._update("live", {"lab_rules": clamp_rules(proposed["rules"]), "lab_proposed": None})
         self.events("live", "You approved the strategy lab's rule change; Live uses it now")
         return self.rules("live")
@@ -278,9 +298,11 @@ class Lab:
         rules = self.rules(mode)
         proposed = self._get("live").get("lab_proposed") if mode == "live" else None
 
+        fixed = self._fixed(mode)  # your own rules win, so the lab's value isn't in use there
+
         def described(r: dict) -> list[dict]:
             return [{"setting": k, "label": KNOB_LABELS[k], "standard": getattr(base, k), "now": v}
-                    for k, v in clamp_rules(r).items() if v != getattr(base, k)]
+                    for k, v in clamp_rules(r).items() if v != getattr(base, k) and k not in fixed]
 
         return {
             "changes": described(rules),
