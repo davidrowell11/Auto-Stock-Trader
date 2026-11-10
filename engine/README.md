@@ -80,6 +80,16 @@ on the rules alone, as when Claude can't be reached.
 Hard limits live in `autotrader/config.py` (`HardLimits`). Settings can be
 tuned, but are always clamped inside them.
 
+Eight rules can be changed in the app (`RULES` in `config.py`, served by
+`GET/PUT /api/{mode}/rules`): max per stock, max stocks at once, the daily loss
+stop, cash kept aside, most one trade may lose, new stocks per day, max in one
+sector and the safety stop distance. Each has a range inside the hard limits,
+and the server checks every value again. A rule you set wins over the strategy
+lab, and the lab stops experimenting with it. In Live, safer changes start at
+once, riskier ones start at the next 9:30am ET open, and during the 30-day
+starter period rules can only be made safer. Every change goes in the activity
+feed.
+
 | Rule | Default | Hard limit |
 | --- | --- | --- |
 | Max per stock | 5% | 10% |

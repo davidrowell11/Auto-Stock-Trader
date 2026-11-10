@@ -22,8 +22,9 @@ import os
 import threading
 from collections import deque
 from collections.abc import Callable, Iterable
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -34,7 +35,7 @@ from . import indicators as ind
 from . import penny, strategy
 from .analyst import QUICK_MODEL
 from .broker.base import Broker
-from .config import HARD_LIMITS, Mode, Settings, load_settings
+from .config import HARD_LIMITS, RULES, RULES_BY_KEY, Mode, Settings, load_settings
 from .engine import APPROVAL_MAX_AGE, DUST, Engine, bot_positions, limit_for
 from .readiness import live_checks, test_results
 from .journal import Journal, StopState
@@ -51,6 +52,20 @@ TEST_ANALYST_MIN = 0.55
 LIVE_ANALYST_MIN = 0.60
 EDITABLE = ("budget", "approve_mode", "always_watch", "never_buy", "after_hours_buys",
             "quick_reviews")
+
+
+NEW_YORK = ZoneInfo("America/New_York")
+
+
+def next_market_open(now: datetime) -> datetime:
+    """The next 9:30am New York weekday open after now (holidays aren't skipped; that's harmless)."""
+    local = now.astimezone(NEW_YORK)
+    day: date = local.date()
+    while True:
+        opens = datetime.combine(day, time(9, 30), NEW_YORK)
+        if opens > local and opens.weekday() < 5:
+            return opens.astimezone(timezone.utc)
+        day += timedelta(days=1)
 
 
 class SettingsStore:
@@ -95,12 +110,96 @@ class SettingsStore:
         age = datetime.now(timezone.utc) - datetime.fromisoformat(first)
         return age < timedelta(days=HARD_LIMITS.live_starter_days)
 
-    def settings_for(self, mode: Mode, with_lab: bool = True) -> Settings:
+    # ----- safety rules you set in the app -----
+    @staticmethod
+    def _checked(rules: dict | None) -> dict:
+        out = {}
+        for k, v in (rules or {}).items():
+            if k in RULES_BY_KEY and v is not None:
+                try:
+                    out[k] = RULES_BY_KEY[k].check(v)
+                except ValueError:  # a hand-edited file can't sneak a value past the ranges
+                    continue
+        return out
+
+    def my_rules(self, mode: Mode, now: datetime | None = None) -> dict:
+        """The safety rules you set that are in effect now (a Live loosening waits for the open)."""
+        saved = self.get(mode)
+        rules = dict(saved.get("my_rules") or {})
+        now = now or datetime.now(timezone.utc)
+        for k, p in (saved.get("rules_pending") or {}).items():
+            if datetime.fromisoformat(p["from"]) <= now:
+                rules[k] = p.get("value")  # None: back to recommended
+        return self._checked(rules)
+
+    def pending_rules(self, mode: Mode, now: datetime | None = None) -> dict:
+        now = now or datetime.now(timezone.utc)
+        return {k: p for k, p in (self.get(mode).get("rules_pending") or {}).items()
+                if k in RULES_BY_KEY and datetime.fromisoformat(p["from"]) > now}
+
+    def change_rules(self, mode: Mode, values: dict, now: datetime | None = None) -> dict:
+        """Apply your rule changes. Safer changes start now; in Live, riskier ones start at the
+        next market open, and none are allowed during the starter period.
+
+        values maps a rule to a number, or to None for "back to recommended". Raises ValueError
+        (with a plain reason) and changes nothing if any value isn't allowed.
+        """
+        now = now or datetime.now(timezone.utc)
+        unknown = [k for k in values if k not in RULES_BY_KEY]
+        if unknown:
+            raise ValueError(f"Not a rule the app can change: {', '.join(unknown)}")
+        current = self.settings_for(mode, now=now)
+        without_mine = self.settings_for(mode, now=now, with_mine=False)
+        live, locked = mode is Mode.LIVE, mode is Mode.LIVE and self.starter_active()
+        opens = next_market_open(now)
+        applied, waiting, plan = [], [], []
+        for k, v in values.items():
+            rule = RULES_BY_KEY[k]
+            new = getattr(without_mine, k) if v is None else rule.check(v)
+            old = getattr(current, k)
+            later = live and rule.looser(old, new)
+            if later and locked:
+                raise ValueError(
+                    f"For the first {HARD_LIMITS.live_starter_days} days of Live, rules can only be "
+                    f"made safer. {rule.label} can't go from {rule.show(old)} to {rule.show(new)} yet.")
+            plan.append((k, None if v is None else new, later))
+            line = f"{rule.label}: {rule.show(old)} → {rule.show(new)}"
+            (waiting if later else applied).append(line)
+        with self._lock:
+            data = self.data.setdefault(mode.value, {})
+            mine = dict(data.get("my_rules") or {})
+            pending = dict(data.get("rules_pending") or {})
+
+            def put(k: str, v) -> None:
+                if v is None:
+                    mine.pop(k, None)
+                else:
+                    mine[k] = v
+
+            for k, p in list(pending.items()):  # fold in changes whose start time has come
+                if datetime.fromisoformat(p["from"]) <= now:
+                    put(k, p.get("value"))
+                    del pending[k]
+            for k, v, later in plan:
+                if later:
+                    pending[k] = {"value": v, "from": opens.isoformat(timespec="seconds")}
+                else:
+                    pending.pop(k, None)
+                    put(k, v)
+            data["my_rules"], data["rules_pending"] = mine, pending
+            self._save()
+        return {"applied": applied, "waiting": waiting,
+                "starts": opens.isoformat(timespec="seconds") if waiting else None}
+
+    def settings_for(self, mode: Mode, with_lab: bool = True, now: datetime | None = None,
+                     with_mine: bool = True) -> Settings:
         saved = self.get(mode)
         overrides = {k: (tuple(v) if isinstance(v, list) else v)
                      for k, v in saved.items() if k in EDITABLE}
         if with_lab:  # rule changes the strategy lab proved (Live: only once you approved them)
             overrides.update(clamp_rules(saved.get("lab_rules", {})))
+        if with_mine:  # a rule you set yourself wins over the lab's
+            overrides.update(self.my_rules(mode, now))
         # After-hours buying starts on for Test (fake money) and off for Live.
         overrides.setdefault("after_hours_buys", mode is Mode.TEST)
         # Cheaper AI reviews too: tried in Test first; switch on for Live in the app.
@@ -576,6 +675,11 @@ class SettingsUpdate(BaseModel):
     never_buy: list[str] | None = None
 
 
+class RulesUpdate(BaseModel):
+    values: dict[str, float | None] = Field(default_factory=dict)  # None: back to recommended
+    reset: bool = False  # every rule back to recommended
+
+
 class Decision(BaseModel):
     decision: str = Field(pattern="^(approve|reject)$")
 
@@ -853,6 +957,50 @@ def create_app(runners: dict[Mode, BotRunner], journal: Journal, token: str,
         r.store.update(r.mode, changes)
         journal.add_event(r.mode.value, "settings", f"Settings changed: {', '.join(changes) or 'nothing'}")
         return get_settings(mode)
+
+    def rules_report(r: BotRunner) -> dict:
+        s, lab = r.settings, clamp_rules(r.store.get(r.mode).get("lab_rules", {}))
+        mine, pending = r.store.my_rules(r.mode), r.store.pending_rules(r.mode)
+        locked = r.mode is Mode.LIVE and r.store.starter_active()
+        out = []
+        for rule in RULES:
+            value = getattr(s, rule.key)
+            p = pending.get(rule.key)
+            out.append({
+                "key": rule.key, "label": rule.label, "help": rule.help, "unit": rule.unit,
+                "low": rule.low, "high": rule.high, "step": rule.step, "value": value,
+                "recommended": rule.recommended, "looser_when": rule.looser_when,
+                "set_by": ("you" if rule.key in mine else
+                           "lab" if rule.key in lab and lab[rule.key] != rule.recommended else "recommended"),
+                "pending": None if p is None else {
+                    "value": rule.recommended if p.get("value") is None else p["value"], "from": p["from"]},
+            })
+        return {"rules": out, "starter_lock": locked,
+                "note": ("Live: safer changes start now; riskier ones start at the next market open."
+                         + (f" For the first {HARD_LIMITS.live_starter_days} days, rules can only be made safer."
+                            if locked else "")) if r.mode is Mode.LIVE else
+                        "Changes start straight away. Each rule stays inside the bot's fixed hard limits."}
+
+    @app.get("/api/{mode}/rules", **secured)
+    def get_rules(mode: str):
+        return rules_report(runner(mode))
+
+    @app.put("/api/{mode}/rules", **secured)
+    def put_rules(mode: str, body: RulesUpdate):
+        r = runner(mode)
+        values = {rule.key: None for rule in RULES} if body.reset else dict(body.values)
+        try:
+            result = r.store.change_rules(r.mode, values)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
+        if result["applied"]:
+            journal.add_event(r.mode.value, "settings", "Safety rules changed: " + "; ".join(result["applied"]))
+        if result["waiting"]:
+            when = datetime.fromisoformat(result["starts"]).astimezone(NEW_YORK)
+            journal.add_event(r.mode.value, "settings",
+                              f"Safety rules changing at the market open ({when:%a %b %-d}, 9:30am ET): "
+                              + "; ".join(result["waiting"]))
+        return rules_report(r) | result
 
     def readiness_report() -> dict:
         test, live = runners[Mode.TEST], runners[Mode.LIVE]
