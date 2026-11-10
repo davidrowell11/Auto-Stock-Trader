@@ -77,7 +77,8 @@ RECENCY_PENALTY = 0.3  # a year-old case counts as this much less alike (markets
 WEIGHTED = {"insider": "Insider buying", "congress": "Congress members' buys",
             "screener": "Today's most active stocks"}
 LABELS = {"trend": "Trend rules", **WEIGHTED, "analyst": "AI analyst approval",
-          "penny": "Penny stocks", "after_hours": "Bought outside regular hours"}
+          "penny": "Penny stocks", "after_hours": "Bought outside regular hours",
+          "overnight": "Bought overnight"}
 NOT_THE_BOTS_CALL = {"Kill switch"}  # sells you asked for don't count as the bot's results
 
 
@@ -143,6 +144,19 @@ class Memory:
     after_hours_extra: float = 0.0  # added to the analyst confidence they need
     after_hours_size: float = 1.0  # times their normal size
     after_hours_note: str | None = None  # their record, for the analyst
+    # The same for overnight buys (8pm-4am New York time), learned separately.
+    overnight_extra: float = 0.0
+    overnight_size: float = 1.0
+    overnight_note: str | None = None
+
+    def session_extra(self, tag: str | None) -> float:
+        return {"after_hours": self.after_hours_extra, "overnight": self.overnight_extra}.get(tag, 0.0)
+
+    def session_size(self, tag: str | None) -> float:
+        return {"after_hours": self.after_hours_size, "overnight": self.overnight_size}.get(tag, 1.0)
+
+    def session_note(self, tag: str | None) -> str | None:
+        return {"after_hours": self.after_hours_note, "overnight": self.overnight_note}.get(tag)
 
     def adjust(self, confidence: float) -> float:
         """The analyst's confidence, corrected by its track record."""
@@ -186,17 +200,22 @@ class Memory:
             shift = float((record.get("calibration") or {}).get("shift") or 0.0)
         except (TypeError, ValueError):
             shift = 0.0
-        hours = record.get("after_hours")
-        hours = hours if isinstance(hours, dict) else {}
-        try:
-            extra = min(AFTER_HOURS_MAX_EXTRA, max(0.0, float(hours.get("extra_confidence") or 0)))
-            size = min(1.0, max(AFTER_HOURS_MIN_SIZE, float(hours.get("size") or 1.0)))
-        except (TypeError, ValueError):
-            extra, size = 0.0, 1.0
         return cls(weights, [str(x) for x in record.get("lessons", [])][:MAX_LESSONS],
                    [c for c in record.get("cases", []) if isinstance(c, dict) and "return" in c],
-                   calibration.adjust(0.5, shift) - 0.5, extra, size,
-                   str(hours["note"]) if hours.get("note") else None)
+                   calibration.adjust(0.5, shift) - 0.5,
+                   *_session_rules(record.get("after_hours")),
+                   *_session_rules(record.get("overnight")))
+
+
+def _session_rules(hours) -> tuple[float, float, str | None]:
+    """(extra confidence, size, note) from a stored verdict; normal if it's missing or bad."""
+    hours = hours if isinstance(hours, dict) else {}
+    try:
+        extra = min(AFTER_HOURS_MAX_EXTRA, max(0.0, float(hours.get("extra_confidence") or 0)))
+        size = min(1.0, max(AFTER_HOURS_MIN_SIZE, float(hours.get("size") or 1.0)))
+    except (TypeError, ValueError):
+        extra, size = 0.0, 1.0
+    return extra, size, str(hours["note"]) if hours.get("note") else None
 
 
 AFTER_HOURS_MIN = 5  # after-hours trades needed before their results change anything
@@ -209,15 +228,20 @@ def _avg(xs: list[float]) -> float:
     return sum(xs) / len(xs) if xs else 0.0
 
 
-def after_hours_verdict(results: list["Outcome"]) -> dict | None:
+SESSION_TAGS = ("after_hours", "overnight")
+SESSION_WORDS = {"after_hours": "buys outside regular hours", "overnight": "overnight buys"}
+
+
+def after_hours_verdict(results: list["Outcome"], tag: str = "after_hours") -> dict | None:
     """How after-hours buys should change, judged by the money they made against regular-hours
     buys. Losing results make them pickier (a higher analyst bar) and smaller; as they improve the
     bar and size come back to normal. They never stop, and never get looser than regular hours.
     None with too few to judge."""
-    ah = [o.ret for o in results if "after_hours" in o.sources][-AFTER_HOURS_RECENT:]
+    ah = [o.ret for o in results if tag in o.sources][-AFTER_HOURS_RECENT:]
     if len(ah) < AFTER_HOURS_MIN:
         return None
-    regular = [o.ret for o in results if "after_hours" not in o.sources][-3 * AFTER_HOURS_RECENT:]
+    regular = [o.ret for o in results
+               if not set(SESSION_TAGS) & set(o.sources)][-3 * AFTER_HOURS_RECENT:]
     avg, reg = _avg(ah), _avg(regular)
     wins = sum(r > 0 for r in ah)
     # Only after-hours buys that lose money get pickier, by how far they trail regular-hours buys
@@ -225,10 +249,11 @@ def after_hours_verdict(results: list["Outcome"]) -> dict | None:
     behind = (max(0.0, reg - avg) if avg < 0 else 0.0) * len(ah) / (len(ah) + 10)
     extra = round(min(AFTER_HOURS_MAX_EXTRA, 3 * behind), 2)
     size = round(max(AFTER_HOURS_MIN_SIZE, 1 - 5 * extra), 2)
-    note = (f"Its last {len(ah)} buys outside regular hours: {wins} made money, averaging "
+    words = SESSION_WORDS.get(tag, tag)
+    note = (f"Its last {len(ah)} {words}: {wins} made money, averaging "
             f"{avg:+.1%}, against {reg:+.1%} for regular-hours buys.")
     if extra > 0:
-        note += (f" So after-hours buys now need {extra:.0%} more analyst confidence and are "
+        note += (f" So {words} now need {extra:.0%} more analyst confidence and are "
                  f"{size:.0%} of normal size until they do better.")
     return {"trades": len(ah), "wins": wins, "avg_return": round(avg, 4),
             "regular_avg_return": round(reg, 4), "extra_confidence": extra, "size": size,
@@ -303,14 +328,17 @@ def _shift(record: dict | None) -> float:
 
 
 def _hours(record: dict | None) -> tuple:
-    h = (record or {}).get("after_hours")
-    h = h if isinstance(h, dict) else {}
-    return (h.get("extra_confidence") or 0.0, h.get("size") or 1.0)
+    out = []
+    for tag in SESSION_TAGS:
+        h = (record or {}).get(tag)
+        h = h if isinstance(h, dict) else {}
+        out += [h.get("extra_confidence") or 0.0, h.get("size") or 1.0]
+    return tuple(out)
 
 
 def _changes_nothing(record: dict) -> bool:
     return (not record.get("lessons") and all(w == 1.0 for w in record.get("weights", {}).values())
-            and _shift(record) == 0.0 and _hours(record) == (0.0, 1.0))
+            and _shift(record) == 0.0 and _hours(record) == (0.0, 1.0) * len(SESSION_TAGS))
 
 
 SHIFT_STEP = 0.02  # a smaller change in how sure the analyst should be isn't worth a new proposal
@@ -440,10 +468,12 @@ class Learner:
                 log.warning("Couldn't get lessons from the analyst: %s", exc)
                 lessons_error = str(exc)[:300]
         wins = sum(o.ret > 0 for o in results)
-        hours = after_hours_verdict(results)
-        before = (last.get("after_hours") or {}).get("extra_confidence") or 0
-        if hours and hours["extra_confidence"] != before:
-            self.journal.add_event("test", "learning", hours["note"])
+        sessions = {tag: after_hours_verdict(results, tag) for tag in SESSION_TAGS}
+        for tag, verdict in sessions.items():
+            before = last.get(tag)
+            before = (before if isinstance(before, dict) else {}).get("extra_confidence") or 0
+            if verdict and verdict["extra_confidence"] != before:
+                self.journal.add_event("test", "learning", verdict["note"])
         record = {
             "learned_at": self._last_try.isoformat(timespec="seconds"),
             "weights": weights, "lessons": lessons, "trades": len(results), "wins": wins,
@@ -452,7 +482,7 @@ class Learner:
             "exam": exam, "practice_trades": len(practice),
             # How sure the analyst should be, from its graded calls (kept until there's a new grade).
             "calibration": (card or {}).get("calibration") or last.get("calibration"),
-            "after_hours": hours,
+            **sessions,  # "after_hours" and "overnight": how pickier and smaller those buys are
             "cases": [o.as_dict() for o in results[-MAX_CASES:]],
             "stats": {s: {**st, "label": LABELS.get(s, s)} for s, st in stats.items()},
         }
@@ -542,7 +572,7 @@ def report(journal: Journal, mode: str) -> dict:
                 "reviews": list(reversed(record.get("reviews", [])))[:10],
                 "calibration": record.get("calibration"),
                 "exam": record.get("exam"), "practice_trades": record.get("practice_trades", 0),
-                "after_hours": record.get("after_hours")}
+                "after_hours": record.get("after_hours"), "overnight": record.get("overnight")}
     finished = {m: len(outcomes(journal, m)) for m in ("test", "live")}
     return {
         "active": view(journal.memory(mode)),

@@ -27,6 +27,7 @@ class DemoApi implements TraderApi {
       dailyLossPct: 0.02,
       cashReservePct: 0.10,
       afterHoursBuys: true,
+      overnightBuys: true,
       quickReviews: true,
     ),
     'live': BotSettings(
@@ -617,6 +618,7 @@ class DemoApi implements TraderApi {
       dailyLossPct: s.dailyLossPct,
       cashReservePct: s.cashReservePct,
       afterHoursBuys: changes['after_hours_buys'] as bool? ?? s.afterHoursBuys,
+      overnightBuys: changes['overnight_buys'] as bool? ?? s.overnightBuys,
       quickReviews: changes['quick_reviews'] as bool? ?? s.quickReviews,
     );
   }

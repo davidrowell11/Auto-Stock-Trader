@@ -35,7 +35,9 @@ DUST = 1e-6  # share counts below this are treated as zero
 QUICK_MARGIN = 0.15
 
 
-EXTENDED_SESSIONS = {"pre", "after"}  # 4am-9:30am and 4pm-8pm New York time
+# 4am-9:30am, 4pm-8pm and overnight 8pm-4am New York time: limit orders only.
+EXTENDED_SESSIONS = {"pre", "after", "overnight"}
+OVERNIGHT_MAX_BUYS = 1  # new stocks per overnight session (8pm-4am), the thinnest trading
 EXTENDED_BUY_CUSHION = 0.005  # outside regular hours, pay at most 0.5% over the last trade
 STALE_AFTER = timedelta(days=3)  # behind the market's latest day by more than a weekend
 EXTENDED_SELL_CUSHION = 0.02  # ...and accept down to 2% under it to get out
@@ -162,6 +164,15 @@ class Engine:
     @property
     def extended(self) -> bool:
         return self.session in EXTENDED_SESSIONS
+
+    @property
+    def overnight(self) -> bool:
+        return self.session == "overnight"
+
+    @property
+    def session_tag(self) -> str | None:
+        """How a buy made now is tagged, so the bot can learn how each session's buys do."""
+        return "overnight" if self.overnight else "after_hours" if self.extended else None
 
     @property
     def needs_approval(self) -> bool:
@@ -297,14 +308,16 @@ class Engine:
         kept = self._monitor_positions(positions, bars, report)
 
         # After hours, buys are sized by how the bot's earlier after-hours buys did.
-        hours = self.memory.after_hours_size if self.extended else 1.0
+        hours = self.memory.session_size(self.session_tag)
         risk = RiskManager(self.s, account, kept, self.journal.peak_equity(self.mode),
                            mood_multiplier=self.mood.size_multiplier * hours)
         if not self.extended:  # trims aren't urgent: they wait for regular hours and market orders
             self._trim_oversized(risk, report)
         report.halted = (self.pause_buying or risk.buying_halted()
                          or (self.mood.note if self.mood.blocks_buying else None))
-        if not report.halted and self.extended and not self.s.after_hours_buys:
+        if not report.halted and self.overnight and not self.s.overnight_buys:
+            report.halted = "new buys wait for 4am New York time"
+        elif not report.halted and not self.overnight and self.extended and not self.s.after_hours_buys:
             report.halted = "new buys wait for regular hours"
         if report.halted:
             log.warning("No new buys: %s", report.halted)
@@ -320,8 +333,19 @@ class Engine:
         return report
 
     def buys_left_today(self) -> int:
-        """New stocks the bot may still buy (or suggest, in approve mode) today, New York time."""
-        return self.s.max_new_buys_per_day - len(self.bought_today())
+        """New stocks the bot may still buy (or suggest, in approve mode) today, New York time.
+        Overnight, at most one, so the thinnest hours can't use up a day's buys before the open."""
+        left = self.s.max_new_buys_per_day - len(self.bought_today())
+        if self.overnight:
+            night = self.journal.bought_since(self.mode, self._night_started(), source="overnight")
+            left = min(left, OVERNIGHT_MAX_BUYS - len(night))
+        return left
+
+    def _night_started(self) -> datetime:
+        """When this overnight session began: 8pm New York time, today or yesterday."""
+        here = self.now().astimezone(strategy.NEW_YORK)
+        start = here.replace(hour=20, minute=0, second=0, microsecond=0)
+        return start if here >= start else start - timedelta(days=1)
 
     def bought_today(self) -> list[str]:
         """Stocks bought (or, in approve mode, suggested) since midnight New York time.
@@ -398,10 +422,21 @@ class Engine:
             if self._sell(p, reason, report, qty=qty):
                 risk.positions[i] = replace(p, qty=p.qty - qty)
 
+    def _overnight_ok(self, symbol: str) -> bool:
+        try:
+            return bool(self.broker.get_asset(symbol).overnight_tradable)
+        except Exception as exc:
+            log.info("Couldn't check if %s trades overnight: %s", symbol, exc)
+            return False
+
     def _sell(self, p: Position, reason: str, report: CycleReport,
               qty: float | None = None) -> bool:
         # Protective sells never wait for approval: getting out fast is the point.
         qty = p.qty if qty is None else qty
+        if self.overnight and not self._overnight_ok(p.symbol):
+            self.progress(f"{p.symbol} isn't traded overnight: selling it waits for 4am New York time")
+            report.skipped.append(f"{p.symbol}: sell waits for 4am (not traded overnight)")
+            return False
         limit = limit_for(Side.SELL, p.current_price, self.extended,
                           penny.is_penny(p.current_price, self.s))
         order = OrderRequest(p.symbol, Side.SELL, qty, limit, reason, self.extended)
@@ -550,7 +585,7 @@ class Engine:
             reasons = [f"Score {sig.score:.2f}", *sig.reasons, size.note,
                        *([twin_note] if twin_note else [])]
             sources = [*sig.sources, *(["penny"] if is_penny else []),
-                       *(["after_hours"] if self.extended else [])]
+                       *([self.session_tag] if self.session_tag else [])]
             similar_note, similar = self.memory.similar_note(sources, sig.score)
             if similar_note:
                 reasons.append(similar_note)
@@ -633,8 +668,9 @@ class Engine:
                     "recent_headlines": self.news_seen.get(sig.symbol, NewsCheck()).headlines,
                     "lessons_from_past_trades": self.memory.lessons,
                     **({"buying_outside_regular_hours": True} if self.extended else {}),
-                    **({"after_hours_record": self.memory.after_hours_note}
-                       if self.extended and self.memory.after_hours_note else {}),
+                    **({"buying_overnight": True} if self.overnight else {}),
+                    **({f"{self.session_tag}_record": note}
+                       if (note := self.memory.session_note(self.session_tag)) else {}),
                     "similar_past_trades": similar or [],
                     **({"desk_check": check} if check else {}),
             }
@@ -653,8 +689,8 @@ class Engine:
             self.journal.save_view(self.mode, sig.symbol, sig.price, view.action, view.confidence,
                                    view.reasoning, view.red_flags, getattr(view, "model", None))
         floor = self.s.penny_analyst_min_confidence if is_penny else self.s.analyst_min_confidence
-        if self.extended:  # pickier after hours when its after-hours buys have done worse
-            floor = max(floor, min(0.95, floor + self.memory.after_hours_extra))
+        if self.extended:  # pickier outside regular hours when those buys have done worse
+            floor = max(floor, min(0.95, floor + self.memory.session_extra(self.session_tag)))
         if not view.approves:
             flags = f" Red flags: {'; '.join(view.red_flags)}." if view.red_flags else ""
             return f"analyst said skip: {view.reasoning}{flags}"
@@ -712,6 +748,8 @@ class Engine:
             return ["leveraged and inverse funds are never bought (they lose value when held for weeks)"]
         if self.extended and penny.is_penny(sig.price, self.s):
             return ["penny stocks are only bought in regular hours"]
+        if self.overnight and not asset.overnight_tradable:
+            return ["not traded overnight"]
         sold = self.journal.last_protective_sell(self.mode, sig.symbol)
         cooloff = timedelta(days=HARD_LIMITS.stop_out_cooloff_days)
         if sold is not None and self.now() - sold < cooloff:

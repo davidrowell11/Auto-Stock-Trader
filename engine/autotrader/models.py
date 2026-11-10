@@ -33,6 +33,7 @@ class Asset:
     sector: str = "Unknown"
     fractionable: bool = False  # can be bought in fractions of a share
     name: str = ""  # e.g. "Direxion Daily Semiconductor Bear 3X Shares"
+    overnight_tradable: bool = False  # traded in the 8pm-4am overnight session
 
     @property
     def is_otc(self) -> bool:

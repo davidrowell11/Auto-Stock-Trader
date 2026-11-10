@@ -395,3 +395,20 @@ class AfterHoursLearningTests(unittest.TestCase):
         self.assertEqual((m.after_hours_extra, m.after_hours_size), (0.0, 1.0))
         self.assertEqual(Memory.from_record({"after_hours": "x"}).after_hours_size, 1.0)
 
+
+
+class OvernightLearningTests(AfterHoursLearningTests):
+    def test_overnight_buys_are_judged_on_their_own(self):
+        from autotrader.learning import Outcome, after_hours_verdict
+        mk = lambda i, ret, src: Outcome("test", f"N{i}", "2026-10-01", "2026-10-10", 100.0,  # noqa: E731
+                                         100.0 * (1 + ret), src, "Hit stop")
+        results = (self.results(0.03, 10)  # after-hours buys doing fine
+                   + [mk(i, -0.04, ["trend", "overnight"]) for i in range(10)])
+        self.assertEqual(after_hours_verdict(results)["extra_confidence"], 0.0)
+        night = after_hours_verdict(results, "overnight")
+        self.assertGreater(night["extra_confidence"], 0)
+        self.assertIn("overnight buys", night["note"])
+        mem = Memory.from_record({"overnight": night})
+        self.assertEqual(mem.session_extra("overnight"), night["extra_confidence"])
+        self.assertEqual(mem.session_extra("after_hours"), 0.0)
+        self.assertEqual(mem.session_size(None), 1.0)

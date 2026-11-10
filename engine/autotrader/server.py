@@ -51,7 +51,7 @@ log = logging.getLogger("autotrader.server")
 TEST_ANALYST_MIN = 0.55
 LIVE_ANALYST_MIN = 0.60
 EDITABLE = ("budget", "approve_mode", "always_watch", "never_buy", "after_hours_buys",
-            "quick_reviews")
+            "overnight_buys", "quick_reviews")
 
 
 NEW_YORK = ZoneInfo("America/New_York")
@@ -206,6 +206,10 @@ class SettingsStore:
             overrides.update(self.my_rules(mode, now))
         # After-hours buying starts on for Test (fake money) and off for Live.
         overrides.setdefault("after_hours_buys", mode is Mode.TEST)
+        # Overnight buying (8pm-4am New York time): Test only for now (David, 2026-11-10).
+        overrides.setdefault("overnight_buys", mode is Mode.TEST)
+        if mode is Mode.LIVE:
+            overrides["overnight_buys"] = False
         # Cheaper AI reviews too: tried in Test first; switch on for Live in the app.
         overrides.setdefault("quick_reviews", mode is Mode.TEST)
         # How sure the analyst must be: an honest swing-trade edge is about 55%, so Test buys
@@ -227,7 +231,8 @@ class SettingsStore:
 
 PRACTICE_EVERY = timedelta(days=30)  # practice on replayed trades at most this often (it costs a little)
 
-SESSION_NOTE = {"pre": " (pre-market, limit orders only)", "after": " (after hours, limit orders only)"}
+SESSION_NOTE = {"pre": " (pre-market, limit orders only)", "after": " (after hours, limit orders only)",
+                "overnight": " (overnight, limit orders only)"}
 
 
 def _now_iso() -> str:
@@ -320,7 +325,9 @@ class BotRunner:
         if self.broker is None:
             return "closed"
         try:
-            return self.broker.market_session()
+            session = self.broker.market_session()
+            # Overnight trading is Test only for now: Live sits it out entirely, sells included.
+            return "closed" if session == "overnight" and self.mode is Mode.LIVE else session
         except Exception as exc:
             log.warning("Couldn't get the market session: %s", exc)
             try:
@@ -395,7 +402,10 @@ class BotRunner:
                 elif self.broker is None:
                     self.step(f"Can't reach the broker: {self.error}", log_it=False)
                 elif (session := self.session()) == "closed":
-                    self.step("Market closed. Trading runs 4am to 8pm New York time on weekdays "
+                    self.step("Market closed. Trading runs Sunday 8pm to Friday 8pm New York time, "
+                              "overnight included (regular hours 9:30am to 4pm)"
+                              if self.mode is Mode.TEST else
+                              "Market closed. Live trades 4am to 8pm New York time on weekdays "
                               "(regular hours 9:30am to 4pm)", log_it=False)
                     wait = min(wait, 60)  # notice the open (and Start) quickly
                     self.next_check = None
@@ -509,11 +519,12 @@ class BotRunner:
         is_penny = penny.is_penny(price, s)
         # Pre-market/after hours with after-hours buying on: a limit order now. Otherwise (closed,
         # buying off, or a penny stock) the order waits for the 9:30am open, as it always has.
+        # (Approvals are Live only, and Live sits the overnight session out.)
         extended = engine.extended and s.after_hours_buys and not is_penny
         hours = 1.0
-        if extended and engine.memory_fn is not None:  # sized by how after-hours buys have done
+        if extended and engine.memory_fn is not None:  # sized by how those buys have done
             try:
-                hours = engine.memory_fn().after_hours_size
+                hours = engine.memory_fn().session_size(engine.session_tag)
             except Exception as exc:
                 log.warning("Couldn't read what the bot learned: %s", exc)
         risk = RiskManager(s, account, positions, self.journal.peak_equity(self.mode.value),
@@ -538,7 +549,8 @@ class BotRunner:
         order_id = self.broker.submit_order(
             OrderRequest(a["symbol"], Side.BUY, qty, limit, "Approved in app", extended))
         # Tagged by how it's bought now, not how things stood when it was suggested.
-        sources = [x for x in a["sources"] if x != "after_hours"] + (["after_hours"] if extended else [])
+        sources = ([x for x in a["sources"] if x not in ("after_hours", "overnight")]
+                   + ([engine.session_tag] if extended else []))
         self.journal.record_trade(self.mode.value, a["symbol"], "buy", qty, price, order_id,
                                   [*a["reasons"], "Approved by you in the app"], sources,
                                   facts=a.get("facts") or None)
@@ -662,11 +674,14 @@ class BotRunner:
                     failed.append(p.symbol)  # buy still being cancelled; press again in a moment
                 continue
             # Closed market: a market order waits for the open. Pre-market/after hours: limit order.
-            limit = limit_for(Side.SELL, p.current_price, engine.extended,
+            # Overnight, a stock not traded overnight gets a market order that waits for the open.
+            extended = engine.extended and not (engine.overnight
+                                                and not engine._overnight_ok(p.symbol))
+            limit = limit_for(Side.SELL, p.current_price, extended,
                               penny.is_penny(p.current_price, engine.s))
             try:
                 order_id = self.broker.submit_order(
-                    OrderRequest(p.symbol, Side.SELL, p.qty, limit, "Kill switch", engine.extended))
+                    OrderRequest(p.symbol, Side.SELL, p.qty, limit, "Kill switch", extended))
             except Exception as exc:
                 log.error("Kill switch sell %s failed: %s", p.symbol, exc)
                 failed.append(p.symbol)
@@ -683,6 +698,7 @@ class SettingsUpdate(BaseModel):
     clear_budget: bool = False
     approve_mode: bool | None = None
     after_hours_buys: bool | None = None
+    overnight_buys: bool | None = None
     quick_reviews: bool | None = None
     always_watch: list[str] | None = None
     never_buy: list[str] | None = None
@@ -759,7 +775,7 @@ def create_app(runners: dict[Mode, BotRunner], journal: Journal, token: str,
         out = {
             "mode": r.mode.value, "running": r.running, "error": r.error, "halted": r.halted,
             "last_cycle": r.last_cycle, "budget": s.budget, "approve_mode": s.approve_mode,
-            "after_hours_buys": s.after_hours_buys,
+            "after_hours_buys": s.after_hours_buys, "overnight_buys": s.overnight_buys,
             "mood": r.mood, "mood_level": r.mood_level, "buying_paused": r.store.get(r.mode).get("buying_paused"),
             "live_enabled": live_enabled,
             "pending_approvals": len(journal.pending_approvals(r.mode.value)),
@@ -994,7 +1010,9 @@ def create_app(runners: dict[Mode, BotRunner], journal: Journal, token: str,
             changes["budget"] = body.budget
         if body.approve_mode is not None:
             changes["approve_mode"] = body.approve_mode
-        for key in ("after_hours_buys", "quick_reviews"):
+        if body.overnight_buys is not None and r.mode is Mode.LIVE:
+            raise HTTPException(400, "Overnight buying is only for Test for now")
+        for key in ("after_hours_buys", "overnight_buys", "quick_reviews"):
             if getattr(body, key) is not None:
                 changes[key] = getattr(body, key)
         for key in ("always_watch", "never_buy"):
