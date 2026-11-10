@@ -32,7 +32,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 
 from .backtest import BacktestResult, run_backtest
-from .config import HARD_LIMITS, Settings
+from .config import HARD_LIMITS, Mode, Settings
 from .journal import Journal
 from .learning import outcomes
 from .strategy import MIN_HISTORY
@@ -91,10 +91,16 @@ class Idea:
         return f"{label}: {current:g} → {self.value:g}"
 
 
-def next_idea(rules: dict, base: Settings, tried: dict[str, str], now: datetime) -> Idea | None:
-    """The next untried neighbour of the current rules (one step on one knob)."""
+def next_idea(rules: dict, base: Settings, tried: dict[str, str], now: datetime,
+              fixed: frozenset[str] | set[str] = frozenset()) -> Idea | None:
+    """The next untried neighbour of the current rules (one step on one knob).
+
+    fixed: rules you set yourself in the app, which the lab leaves alone.
+    """
     current = apply_rules(base, rules)
     for knob, values in KNOBS.items():
+        if knob in fixed:
+            continue
         here = getattr(current, knob)
         i = values.index(here) if here in values else 0
         for j in (i + 1, i - 1):
@@ -161,11 +167,9 @@ class Lab:
         return clamp_rules(self._get(mode).get("lab_rules", {}))
 
     def _get(self, mode: str) -> dict:
-        from .config import Mode
         return self.store.get(Mode(mode))
 
     def _update(self, mode: str, changes: dict) -> None:
-        from .config import Mode
         self.store.update(Mode(mode), changes)
 
     def log(self) -> list[dict]:
@@ -191,7 +195,9 @@ class Lab:
         now = self._last_try = self.now()
         rules = self.rules("test")
         tried = {e["idea"]: e["ts"] for e in self.log() if not e.get("kept")}
-        idea = next_idea(rules, self.base(), tried, now)
+        mine = getattr(self.store, "my_rules", None)
+        fixed = set(mine(Mode.TEST)) if mine else set()
+        idea = next_idea(rules, self.base(), tried, now, fixed)
         if idea is None:
             return None
         current = apply_rules(self.base(), rules)

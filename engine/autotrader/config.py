@@ -179,3 +179,72 @@ def load_settings(env: dict[str, str] | None = None, **overrides) -> Settings:
             values[f.name] = _parse(env[key], getattr(base, f.name))
     values.update(overrides)
     return replace(base, **values).clamped()
+
+
+# ----- Safety rules you can change in the app -----
+@dataclass(frozen=True)
+class Rule:
+    """One safety rule the app may change, always inside a range that sits within the hard limits."""
+
+    key: str  # the Settings field
+    label: str
+    help: str
+    low: float
+    high: float
+    step: float
+    unit: str  # "percent", "count" or "times"
+    looser_when: str = "higher"  # which direction takes more risk: "higher" or "lower"
+
+    @property
+    def recommended(self) -> float:
+        return getattr(Settings(), self.key)
+
+    def check(self, value) -> float | int:
+        """The value rounded to the slider's step, or ValueError with a plain reason."""
+        try:
+            v = float(value)
+        except (TypeError, ValueError):
+            raise ValueError(f"{self.label}: not a number") from None
+        if v != v or v < self.low - 1e-9 or v > self.high + 1e-9:  # v != v: NaN
+            raise ValueError(f"{self.label} must be between {self.show(self.low)} and {self.show(self.high)}")
+        v = min(self.high, max(self.low, round(round(v / self.step) * self.step, 6)))
+        return int(round(v)) if self.unit == "count" else v
+
+    def looser(self, old: float, new: float) -> bool:
+        return new > old + 1e-9 if self.looser_when == "higher" else new < old - 1e-9
+
+    def show(self, v: float) -> str:
+        if self.unit == "percent":
+            return f"{v * 100:g}%"
+        return f"{v:g}" if self.unit == "count" else f"{v:g}x"
+
+
+_H = HARD_LIMITS
+RULES: tuple[Rule, ...] = (
+    Rule("max_position_pct", "Max per stock",
+         "The most of the budget one stock may take when it's bought.",
+         0.01, _H.max_position_pct, 0.005, "percent"),
+    Rule("max_open_positions", "Max stocks at once",
+         "Fewer stocks means bigger bets on each; more spreads the risk.",
+         3, _H.max_open_positions, 1, "count"),
+    Rule("daily_loss_pct", "Stop buying for the day after a loss of",
+         "If the account falls this much in a day, no new buys until tomorrow. Protective sells still happen.",
+         0.005, _H.max_daily_loss_pct, 0.0025, "percent"),
+    Rule("cash_reserve_pct", "Cash always kept aside",
+         "Money the bot never invests, as a cushion.",
+         _H.min_cash_reserve_pct, 0.50, 0.01, "percent", looser_when="lower"),
+    Rule("risk_per_trade_pct", "Most one trade may lose",
+         "Each buy is sized so that if its safety stop is hit, the loss is at most this share of the budget.",
+         0.001, _H.max_risk_per_trade_pct, 0.0005, "percent"),
+    Rule("max_new_buys_per_day", "New stocks per day",
+         "Spreads buying over several days instead of putting everything on one day's prices.",
+         1, _H.max_new_buys_per_day, 1, "count"),
+    Rule("max_sector_pct", "Max in one sector",
+         "The most of the budget one industry (like tech or health care) may take.",
+         0.10, _H.max_sector_pct, 0.01, "percent"),
+    Rule("atr_stop_multiple", "Safety stop distance",
+         "How far below the price the safety stop sits, in average daily moves. Wider stops sell less "
+         f"often but lose more when hit; a stop is never more than {_H.max_stop_loss_pct:.0%} below the buy.",
+         1.5, 3.5, 0.25, "times"),
+)
+RULES_BY_KEY = {r.key: r for r in RULES}

@@ -80,7 +80,8 @@ couple of weeks without surprises.
 | Earnings guard | No buys in the week before a company reports earnings. |
 | Cool-off | After a stock is sold to protect you (stop or trend break), the bot won't buy it again for a week. |
 | Approvals expire | A suggested buy expires after 24 hours, and the rules are checked again when you approve it. |
-| Learning limits | What the bot learns can only change which stocks rank first, what the analyst watches for, and (via the lab) the stop distance or minimum trend score within the hard limits. Budgets, position sizes and penny rules never change. |
+| Learning limits | What the bot learns can only change which stocks rank first, what the analyst watches for, and (via the lab) the stop distance or minimum trend score within the hard limits. Budgets, position sizes and penny rules never change on their own. |
+| Your rule changes | Safety rules you change in the app stay inside the hard limits. In Live, riskier changes wait for the next market open, and in the first 30 days rules can only be made safer. |
 | AI spending cap | The analyst pauses for the rest of the month at your cap. A call that could take the month over the cap isn't sent. |
 | Look-alike stocks | A stock whose daily moves closely track one the bot holds (0.8 correlation over 3 months) counts toward that holding's sector limit. |
 | Stale prices | A stock with no new prices while the market traded (halted, delisted or a data gap) isn't bought. |
