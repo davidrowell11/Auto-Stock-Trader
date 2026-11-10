@@ -1,5 +1,6 @@
 import 'package:auto_stock_trader/demo.dart';
 import 'package:auto_stock_trader/screens/analyst.dart';
+import 'package:auto_stock_trader/screens/safety_rules.dart';
 import 'package:auto_stock_trader/screens/settings.dart';
 import 'package:auto_stock_trader/state.dart';
 import 'package:auto_stock_trader/widgets.dart';
@@ -58,6 +59,55 @@ void main() {
     await t.pumpWidget(_wrap(const SettingsScreen()));
     await t.pumpAndSettle();
     expect(find.text('Monthly spending cap'), findsOneWidget);
+    expect(t.takeException(), isNull);
+  });
+
+  testWidgets('safety rules: a slider change can be saved', (t) async {
+    t.view.physicalSize = const Size(390, 9000);
+    t.view.devicePixelRatio = 1;
+    addTearDown(t.view.reset);
+    final api = DemoApi();
+    final state = AppState()..api = api;
+    await t.pumpWidget(
+      AppScope(
+        state: state,
+        child: const MaterialApp(
+          home: SafetyRulesScreen(mode: 'test', budget: 10000),
+        ),
+      ),
+    );
+    await t.pumpAndSettle();
+    expect(find.text('Max per stock'), findsOneWidget);
+    expect(find.text('\$500 of \$10,000'), findsOneWidget);
+    // Drag the first slider (max per stock) to the left: safer.
+    await t.drag(find.byType(Slider).first, const Offset(-120, 0));
+    await t.pumpAndSettle();
+    expect(find.text('Safer'), findsOneWidget);
+    await t.tap(find.textContaining('Save 1 change'));
+    await t.pumpAndSettle();
+    expect(find.text('Set by you'), findsOneWidget);
+    final saved = (await api.rules('test')).rules.first;
+    expect(saved.value, lessThan(0.05));
+    expect(t.takeException(), isNull);
+  });
+
+  testWidgets('safety rules: Live shows the starter lock', (t) async {
+    t.view.physicalSize = const Size(390, 9000);
+    t.view.devicePixelRatio = 1;
+    addTearDown(t.view.reset);
+    final state = AppState()..api = DemoApi();
+    await t.pumpWidget(
+      AppScope(
+        state: state,
+        child: const MaterialApp(
+          home: SafetyRulesScreen(mode: 'live', budget: 1000),
+        ),
+      ),
+    );
+    await t.pumpAndSettle();
+    await t.drag(find.byType(Slider).first, const Offset(120, 0));
+    await t.pumpAndSettle();
+    expect(find.textContaining('only safer changes'), findsOneWidget);
     expect(t.takeException(), isNull);
   });
 }

@@ -69,6 +69,16 @@ abstract class TraderApi {
 
   Future<AiSpending> aiSpending();
   Future<AiSpending> setAiCap(double monthlyCap);
+
+  /// The safety rules you can change, with their allowed ranges.
+  Future<RulesReport> rules(String mode);
+
+  /// Change rules (null = back to recommended), or [reset] every rule.
+  Future<RulesReport> updateRules(
+    String mode,
+    Map<String, double?> values, {
+    bool reset = false,
+  });
 }
 
 class HttpApi implements TraderApi {
@@ -296,6 +306,19 @@ class HttpApi implements TraderApi {
   @override
   Future<AiSpending> setAiCap(double monthlyCap) async => AiSpending.fromJson(
     await _send('PUT', '/api/ai/spending', {'monthly_cap': monthlyCap}),
+  );
+
+  @override
+  Future<RulesReport> rules(String mode) async =>
+      RulesReport.fromJson(await _send('GET', '/api/$mode/rules'));
+
+  @override
+  Future<RulesReport> updateRules(
+    String mode,
+    Map<String, double?> values, {
+    bool reset = false,
+  }) async => RulesReport.fromJson(
+    await _send('PUT', '/api/$mode/rules', {'values': values, 'reset': reset}),
   );
 
   @override
