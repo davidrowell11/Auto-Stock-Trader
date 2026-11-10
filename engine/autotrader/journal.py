@@ -66,7 +66,8 @@ def _now() -> str:
 # Added after the first release; older journals get them on startup.
 STOP_COLUMNS = {"qty": "REAL", "order_id": "TEXT", "order_side": "TEXT"}
 # What pointed the bot at a stock ("trend", "screener", "insider", ...), so it can learn which work.
-LATER_COLUMNS = {"stops": STOP_COLUMNS, "trades": {"sources": "TEXT"}, "approvals": {"sources": "TEXT"},
+LATER_COLUMNS = {"stops": STOP_COLUMNS, "trades": {"sources": "TEXT", "facts": "TEXT"},
+                 "approvals": {"sources": "TEXT", "facts": "TEXT"},
                  "analyst_views": {"model": "TEXT"}}
 
 
@@ -111,15 +112,20 @@ class Journal:
     # ----- trades -----
     def record_trade(self, mode: str, symbol: str, side: str, qty: float, price: float,
                      order_id: str | None, reasons: list[str],
-                     sources: list[str] | None = None, when: datetime | None = None) -> None:
-        """``when`` defaults to now (a backtest passes the day it's replaying)."""
+                     sources: list[str] | None = None, when: datetime | None = None,
+                     facts: dict | None = None) -> None:
+        """``when`` defaults to now (a backtest passes the day it's replaying).
+
+        ``facts``: the desk check's numbers at a buy, so later reviews can see what it looked like.
+        """
         ts = _now() if when is None else when.astimezone(timezone.utc).isoformat(timespec="seconds")
         with self.db:
             self.db.execute(
-                "INSERT INTO trades (ts, mode, symbol, side, qty, price, order_id, reasons, sources)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO trades (ts, mode, symbol, side, qty, price, order_id, reasons, sources,"
+                " facts) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (ts, mode, symbol, side, qty, price, order_id, json.dumps(reasons),
-                 json.dumps(sources) if sources is not None else None),
+                 json.dumps(sources) if sources is not None else None,
+                 json.dumps(facts) if facts else None),
             )
 
     def last_protective_sell(self, mode: str, symbol: str) -> datetime | None:
@@ -146,7 +152,7 @@ class Journal:
 
     def trades(self, mode: str) -> list[dict]:
         cur = self.db.execute(
-            "SELECT ts, symbol, side, qty, price, order_id, reasons, sources FROM trades"
+            "SELECT ts, symbol, side, qty, price, order_id, reasons, sources, facts FROM trades"
             " WHERE mode = ? ORDER BY id", (mode,),
         )
         cols = [c[0] for c in cur.description]
@@ -154,6 +160,7 @@ class Journal:
         for r in rows:
             r["reasons"] = json.loads(r["reasons"])
             r["sources"] = json.loads(r["sources"]) if r["sources"] else ["trend"]
+            r["facts"] = json.loads(r["facts"]) if r["facts"] else {}
         return rows
 
     # ----- trailing stops -----
@@ -196,13 +203,14 @@ class Journal:
     # ----- approvals (Live approve mode) -----
     def queue_approval(self, mode: str, symbol: str, side: str, qty: float,
                        limit_price: float | None, reasons: list[str],
-                       sources: list[str] | None = None) -> int:
+                       sources: list[str] | None = None, facts: dict | None = None) -> int:
         with self.db:
             cur = self.db.execute(
-                "INSERT INTO approvals (ts, mode, symbol, side, qty, limit_price, reasons, sources)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO approvals (ts, mode, symbol, side, qty, limit_price, reasons, sources,"
+                " facts) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (_now(), mode, symbol, side, qty, limit_price, json.dumps(reasons),
-                 json.dumps(sources) if sources is not None else None),
+                 json.dumps(sources) if sources is not None else None,
+                 json.dumps(facts) if facts else None),
             )
         return int(cur.lastrowid)
 
@@ -219,7 +227,7 @@ class Journal:
 
     def get_approval(self, approval_id: int) -> dict | None:
         cur = self.db.execute(
-            "SELECT id, ts, mode, symbol, side, qty, limit_price, reasons, status, sources"
+            "SELECT id, ts, mode, symbol, side, qty, limit_price, reasons, status, sources, facts"
             " FROM approvals WHERE id = ?", (approval_id,),
         )
         row = cur.fetchone()
@@ -228,6 +236,7 @@ class Journal:
         out = dict(zip([c[0] for c in cur.description], row))
         out["reasons"] = json.loads(out["reasons"])
         out["sources"] = json.loads(out["sources"]) if out["sources"] else ["trend"]
+        out["facts"] = json.loads(out["facts"]) if out["facts"] else {}
         return out
 
     def expire_approvals(self, mode: str, max_age: timedelta) -> int:

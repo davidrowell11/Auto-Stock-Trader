@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta
 
+from .calibration import calibrate
 from .models import Bar
 
 HORIZON = 20  # trading days after the review (about a month)
@@ -97,7 +98,8 @@ def grade(views: list[dict], bars: dict[str, list[Bar]], today: date) -> dict:
         ret = end.close / start.close - 1
         vs_market = ret - (m1 / m0 - 1)
         graded[v["action"]].append({"symbol": v["symbol"], "day": v["day"],
-                                    "return": round(ret, 4), "vs_market": round(vs_market, 4)})
+                                    "return": round(ret, 4), "vs_market": round(vs_market, 4),
+                                    "confidence": v.get("confidence")})
 
     def side(calls: list[dict]) -> dict:
         n = len(calls)
@@ -118,6 +120,8 @@ def grade(views: list[dict], bars: dict[str, list[Bar]], today: date) -> dict:
         "missed": sorted(graded["skip"], key=lambda c: -c["vs_market"])[:3],
         # The approved stocks that did worst: what it let through.
         "let_through": sorted(graded["buy"], key=lambda c: c["vs_market"])[:3],
+        # Was it as sure as it should have been? (calibration.py)
+        "calibration": calibrate(graded["buy"] + graded["skip"]),
     }
 
 
