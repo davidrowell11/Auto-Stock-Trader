@@ -186,12 +186,16 @@ class Memory:
             shift = float((record.get("calibration") or {}).get("shift") or 0.0)
         except (TypeError, ValueError):
             shift = 0.0
-        hours = record.get("after_hours") or {}
+        hours = record.get("after_hours")
+        hours = hours if isinstance(hours, dict) else {}
+        try:
+            extra = min(AFTER_HOURS_MAX_EXTRA, max(0.0, float(hours.get("extra_confidence") or 0)))
+            size = min(1.0, max(AFTER_HOURS_MIN_SIZE, float(hours.get("size") or 1.0)))
+        except (TypeError, ValueError):
+            extra, size = 0.0, 1.0
         return cls(weights, [str(x) for x in record.get("lessons", [])][:MAX_LESSONS],
                    [c for c in record.get("cases", []) if isinstance(c, dict) and "return" in c],
-                   calibration.adjust(0.5, shift) - 0.5,
-                   min(AFTER_HOURS_MAX_EXTRA, max(0.0, float(hours.get("extra_confidence") or 0))),
-                   min(1.0, max(AFTER_HOURS_MIN_SIZE, float(hours.get("size") or 1.0))),
+                   calibration.adjust(0.5, shift) - 0.5, extra, size,
                    str(hours["note"]) if hours.get("note") else None)
 
 
@@ -207,7 +211,7 @@ def _avg(xs: list[float]) -> float:
 
 def after_hours_verdict(results: list["Outcome"]) -> dict | None:
     """How after-hours buys should change, judged by the money they made against regular-hours
-    buys. Worse results make them pickier (a higher analyst bar) and smaller; as they improve the
+    buys. Losing results make them pickier (a higher analyst bar) and smaller; as they improve the
     bar and size come back to normal. They never stop, and never get looser than regular hours.
     None with too few to judge."""
     ah = [o.ret for o in results if "after_hours" in o.sources][-AFTER_HOURS_RECENT:]
@@ -216,8 +220,9 @@ def after_hours_verdict(results: list["Outcome"]) -> dict | None:
     regular = [o.ret for o in results if "after_hours" not in o.sources][-3 * AFTER_HOURS_RECENT:]
     avg, reg = _avg(ah), _avg(regular)
     wins = sum(r > 0 for r in ah)
-    # How far behind they are, trusted more the more trades there are (10 trades: half).
-    behind = max(0.0, reg - avg) * len(ah) / (len(ah) + 10)
+    # Only after-hours buys that lose money get pickier, by how far they trail regular-hours buys
+    # (trusted more the more trades show it: 10 trades, half). Profitable ones keep full size.
+    behind = (max(0.0, reg - avg) if avg < 0 else 0.0) * len(ah) / (len(ah) + 10)
     extra = round(min(AFTER_HOURS_MAX_EXTRA, 3 * behind), 2)
     size = round(max(AFTER_HOURS_MIN_SIZE, 1 - 5 * extra), 2)
     note = (f"Its last {len(ah)} buys outside regular hours: {wins} made money, averaging "
@@ -228,17 +233,6 @@ def after_hours_verdict(results: list["Outcome"]) -> dict | None:
     return {"trades": len(ah), "wins": wins, "avg_return": round(avg, 4),
             "regular_avg_return": round(reg, 4), "extra_confidence": extra, "size": size,
             "note": note}
-    prev = last or {}
-    since = date.fromisoformat(prev["since"]) if prev.get("paused") and prev.get("since") else today
-    retry = since + AFTER_HOURS_RETRY
-    if today >= retry:  # a week's trial; the next weekly review judges it again
-        out["note"] = "Trying after-hours buys again for a week to see if they've improved"
-        return out
-    out.update(paused=True, since=since.isoformat(), note=(
-        f"after-hours buys are paused: the last {len(ah)} averaged {avg:+.1%}, against "
-        f"{reg:+.1%} in regular hours. The bot tries them again on "
-        f"{retry:%b} {retry.day}"))
-    return out
 
 
 def outcomes(journal: Journal, mode: str) -> list[Outcome]:
@@ -308,9 +302,15 @@ def _shift(record: dict | None) -> float:
     return float(((record or {}).get("calibration") or {}).get("shift") or 0.0)
 
 
+def _hours(record: dict | None) -> tuple:
+    h = (record or {}).get("after_hours")
+    h = h if isinstance(h, dict) else {}
+    return (h.get("extra_confidence") or 0.0, h.get("size") or 1.0)
+
+
 def _changes_nothing(record: dict) -> bool:
     return (not record.get("lessons") and all(w == 1.0 for w in record.get("weights", {}).values())
-            and _shift(record) == 0.0)
+            and _shift(record) == 0.0 and _hours(record) == (0.0, 1.0))
 
 
 SHIFT_STEP = 0.02  # a smaller change in how sure the analyst should be isn't worth a new proposal
@@ -318,7 +318,8 @@ SHIFT_STEP = 0.02  # a smaller change in how sure the analyst should be isn't wo
 
 def _same(a: dict | None, b: dict) -> bool:
     return a is not None and ((a.get("weights"), a.get("lessons")) == (b["weights"], b["lessons"])
-                              and abs(_shift(a) - _shift(b)) < SHIFT_STEP)
+                              and abs(_shift(a) - _shift(b)) < SHIFT_STEP
+                              and _hours(a) == _hours(b))
 
 
 class Learner:
