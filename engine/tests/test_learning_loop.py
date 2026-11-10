@@ -186,3 +186,96 @@ class EngineCalibrationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ExamAndPracticeTests(unittest.TestCase):
+    def setUp(self):
+        from autotrader.notebook import sit_exam
+        self.sit_exam = sit_exam
+        self.j = Journal()
+        self.proposal = "Stretched buys get stopped out"
+
+        def reflect(new, trades, notebook, stats, card=None):
+            ids = [t["id"] for t in trades]
+            return {"reviews": [], "notebook": [{"text": self.proposal, "support": ids, "against": []}]}
+
+        self.reflect = reflect
+
+    def learner(self, exam_fn):
+        return Learner(self.j, now=lambda: datetime(2026, 11, 10, tzinfo=timezone.utc),
+                       reflect_fn=self.reflect, exam_fn=exam_fn)
+
+    def losers(self, n=8):
+        for i in range(n):
+            finished(self.j, f"L{i}", 100, 95, {"above_20_day_average": 0.1})
+
+    def test_brier_score_and_failed_questions(self):
+        cases = [{"facts": {"x": 1}, "return": 0.1}, {"facts": {"x": 1}, "return": -0.1}]
+        self.assertEqual(self.sit_exam(lambda c: 1.0, cases[:1], []), 0.0)
+        self.assertEqual(self.sit_exam(lambda c: 0.5, cases, []), 0.25)
+
+        def broken(_):
+            raise RuntimeError("down")
+
+        self.assertIsNone(self.sit_exam(broken, cases, []))
+
+    def test_a_notebook_that_makes_calls_worse_is_not_used(self):
+        # With the new lesson it says 90% on stocks that all lost: worse than its old 50%.
+        exam = lambda c: 0.9 if any(self.proposal in x for x in c["lessons_from_past_trades"]) else 0.5  # noqa: E731
+        self.losers()
+        record = self.learner(exam).learn()
+        self.assertFalse(record["exam"]["passed"])
+        self.assertEqual(record["notebook"], [])
+        self.assertTrue(any("kept its old ones" in e["message"] for e in self.j.events("test")))
+
+    def test_a_better_notebook_passes(self):
+        exam = lambda c: 0.1 if any(self.proposal in x for x in c["lessons_from_past_trades"]) else 0.5  # noqa: E731
+        self.losers()
+        record = self.learner(exam).learn()
+        self.assertTrue(record["exam"]["passed"])
+        self.assertEqual(record["exam"]["cases"], 8)
+        self.assertEqual(record["notebook"][0]["text"], self.proposal)
+
+    def test_no_exam_with_too_few_cases(self):
+        self.losers(3)
+        record = self.learner(lambda c: 0.9).learn()
+        self.assertIsNone(record["exam"])
+        self.assertEqual(len(record["notebook"]), 1)
+
+    def test_practice_trades_teach_it_before_any_real_ones(self):
+        replayed = [{"symbol": f"P{i}", "mode": "test", "bought": "2024-03-01", "sold": "2024-03-20",
+                     "days_held": 19, "return": -0.04, "sources": ["trend"], "sell_reason": "Hit stop",
+                     "score": 0.5, "id": f"P{i} 2024-03-01", "facts": {"above_20_day_average": 0.1}}
+                    for i in range(6)]
+        learner = self.learner(None)
+        record = learner.practice(replayed)
+        entry = record["notebook"][0]
+        self.assertTrue(all(x.startswith("practice ") for x in entry["support"]))
+        self.assertEqual(entry["status"], "active")  # 6 practice trades back it
+        self.assertEqual(record["practice_trades"], 6)
+        self.assertEqual(record["trades"], 0)  # no real trades: weights and stats untouched
+        self.assertIsNotNone(learner.last_practice())
+
+
+class PracticeEndpointTests(unittest.TestCase):
+    def test_needs_the_analyst_and_waits_a_month(self):
+        import tempfile
+        import threading
+
+        from autotrader.config import Mode
+        from autotrader.server import BotRunner, SettingsStore, create_app
+        from test_final_check import AUTH, TOKEN, TestClient
+
+        with tempfile.TemporaryDirectory() as tmp:
+            j = Journal()
+            store = SettingsStore(f"{tmp}/s.json")
+            runners = {m: BotRunner(m, store, j, threading.RLock(),
+                                    lambda mode: SlowBroker(100_000, {})) for m in Mode}
+            c = TestClient(create_app(runners, j, TOKEN, live_enabled=True))
+            self.assertEqual(c.post("/api/test/learning/practice", headers=AUTH).status_code, 503)
+
+            learner = Learner(j, reflect_fn=lambda *a: {"reviews": [], "notebook": []})
+            c = TestClient(create_app(runners, j, TOKEN, live_enabled=True, learner=learner))
+            r = c.post("/api/test/learning/practice", headers=AUTH)
+            self.assertEqual(r.status_code, 503)  # no price history (no lab) on this server
+            self.assertIn("price history", r.json()["detail"])
