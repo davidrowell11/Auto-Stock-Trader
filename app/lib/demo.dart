@@ -368,6 +368,156 @@ class DemoApi implements TraderApi {
     return aiSpending();
   }
 
+  // The same rules and ranges the bot serves (config.py RULES).
+  static const _ruleSpecs = [
+    (
+      'max_position_pct',
+      'Max per stock',
+      'The most of the budget one stock may take when it\'s bought.',
+      0.01,
+      0.10,
+      0.005,
+      'percent',
+      0.05,
+      true,
+    ),
+    (
+      'max_open_positions',
+      'Max stocks at once',
+      'Fewer stocks means bigger bets on each; more spreads the risk.',
+      3.0,
+      25.0,
+      1.0,
+      'count',
+      15.0,
+      true,
+    ),
+    (
+      'daily_loss_pct',
+      'Stop buying for the day after a loss of',
+      'If the account falls this much in a day, no new buys until tomorrow. Protective sells still happen.',
+      0.005,
+      0.03,
+      0.0025,
+      'percent',
+      0.02,
+      true,
+    ),
+    (
+      'cash_reserve_pct',
+      'Cash always kept aside',
+      'Money the bot never invests, as a cushion.',
+      0.05,
+      0.50,
+      0.01,
+      'percent',
+      0.10,
+      false,
+    ),
+    (
+      'risk_per_trade_pct',
+      'Most one trade may lose',
+      'Each buy is sized so that if its safety stop is hit, the loss is at most this share of the budget.',
+      0.001,
+      0.005,
+      0.0005,
+      'percent',
+      0.003,
+      true,
+    ),
+    (
+      'max_new_buys_per_day',
+      'New stocks per day',
+      'Spreads buying over several days instead of putting everything on one day\'s prices.',
+      1.0,
+      6.0,
+      1.0,
+      'count',
+      3.0,
+      true,
+    ),
+    (
+      'max_sector_pct',
+      'Max in one sector',
+      'The most of the budget one industry (like tech or health care) may take.',
+      0.10,
+      0.25,
+      0.01,
+      'percent',
+      0.25,
+      true,
+    ),
+    (
+      'atr_stop_multiple',
+      'Safety stop distance',
+      'How far below the price the safety stop sits, in average daily moves. A stop is never more than 8% below the buy.',
+      1.5,
+      3.5,
+      0.25,
+      'times',
+      2.0,
+      true,
+    ),
+  ];
+  final Map<String, Map<String, double>> _myRules = {'test': {}, 'live': {}};
+
+  RulesReport _rules(String mode) => RulesReport(
+    rules: [
+      for (final r in _ruleSpecs)
+        SafetyRule(
+          key: r.$1,
+          label: r.$2,
+          help: r.$3,
+          low: r.$4,
+          high: r.$5,
+          step: r.$6,
+          unit: r.$7,
+          recommended: r.$8,
+          looserWhenHigher: r.$9,
+          value: _myRules[mode]![r.$1] ?? r.$8,
+          setBy: _myRules[mode]!.containsKey(r.$1) ? 'you' : 'recommended',
+        ),
+    ],
+    starterLock: mode == 'live',
+    note: mode == 'live'
+        ? 'Live: safer changes start now; riskier ones start at the next market open. '
+              'For the first 30 days, rules can only be made safer.'
+        : 'Changes start straight away. Each rule stays inside the bot\'s fixed hard limits.',
+  );
+
+  @override
+  Future<RulesReport> rules(String mode) async => _rules(mode);
+
+  @override
+  Future<RulesReport> updateRules(
+    String mode,
+    Map<String, double?> values, {
+    bool reset = false,
+  }) async {
+    final mine = _myRules[mode]!;
+    final current = {for (final r in _rules(mode).rules) r.key: r};
+    final changes = reset ? {for (final k in current.keys) k: null} : values;
+    for (final e in changes.entries) {
+      final rule = current[e.key];
+      if (rule == null) continue;
+      final to = e.value ?? rule.recommended;
+      if (mode == 'live' && rule.looser(rule.value, to)) {
+        throw ApiException(
+          'For the first 30 days of Live, rules can only be made safer. '
+          '${rule.label} can\'t go from ${rule.show(rule.value)} to ${rule.show(to)} yet.',
+        );
+      }
+    }
+    for (final e in changes.entries) {
+      if (e.value == null) {
+        mine.remove(e.key);
+      } else {
+        mine[e.key] = e.value!;
+      }
+    }
+    return _rules(mode);
+  }
+
   @override
   Future<List<Approval>> approvals(String mode) async =>
       mode == 'live' ? List.of(_approvals) : [];

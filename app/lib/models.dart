@@ -622,3 +622,102 @@ class AiSpending {
     cap: _dn(j['cap']),
   );
 }
+
+/// One safety rule you can change, with the range the bot allows.
+class SafetyRule {
+  SafetyRule({
+    required this.key,
+    required this.label,
+    required this.help,
+    required this.unit,
+    required this.low,
+    required this.high,
+    required this.step,
+    required this.value,
+    required this.recommended,
+    required this.looserWhenHigher,
+    required this.setBy,
+    this.pendingValue,
+    this.pendingFrom,
+  });
+  final String key, label, help;
+  final String unit; // percent, count or times
+  final double low, high, step, value, recommended;
+  final bool looserWhenHigher; // which way takes more risk
+  final String setBy; // you, lab or recommended
+  final double? pendingValue; // a Live change waiting for the market open
+  final DateTime? pendingFrom;
+
+  bool looser(double from, double to) =>
+      looserWhenHigher ? to > from + 1e-9 : to < from - 1e-9;
+
+  String show(double v) => switch (unit) {
+    'percent' => '${_trim(v * 100)}%',
+    'count' => v.round().toString(),
+    _ => '${_trim(v)}x',
+  };
+
+  static String _trim(double v) {
+    final s = v.toStringAsFixed(2);
+    return s.replaceAll(RegExp(r'\.?0+$'), '');
+  }
+
+  SafetyRule withValue(double v, {String? setBy}) => SafetyRule(
+    key: key,
+    label: label,
+    help: help,
+    unit: unit,
+    low: low,
+    high: high,
+    step: step,
+    value: v,
+    recommended: recommended,
+    looserWhenHigher: looserWhenHigher,
+    setBy: setBy ?? this.setBy,
+    pendingValue: pendingValue,
+    pendingFrom: pendingFrom,
+  );
+
+  factory SafetyRule.fromJson(Map<String, dynamic> j) {
+    final p = j['pending'] as Map<String, dynamic>?;
+    return SafetyRule(
+      key: j['key'] as String,
+      label: j['label'] as String? ?? j['key'] as String,
+      help: j['help'] as String? ?? '',
+      unit: j['unit'] as String? ?? 'percent',
+      low: _d(j['low']),
+      high: _d(j['high']),
+      step: _d(j['step']),
+      value: _d(j['value']),
+      recommended: _d(j['recommended']),
+      looserWhenHigher: (j['looser_when'] as String? ?? 'higher') == 'higher',
+      setBy: j['set_by'] as String? ?? 'recommended',
+      pendingValue: p == null ? null : _dn(p['value']),
+      pendingFrom: p == null
+          ? null
+          : DateTime.tryParse(p['from'] as String? ?? ''),
+    );
+  }
+}
+
+class RulesReport {
+  RulesReport({
+    required this.rules,
+    required this.starterLock,
+    required this.note,
+    this.waiting = const [],
+  });
+  final List<SafetyRule> rules;
+  final bool starterLock; // Live's first 30 days: only safer changes
+  final String note;
+  final List<String> waiting; // changes just saved that start at the next open
+  factory RulesReport.fromJson(Map<String, dynamic> j) => RulesReport(
+    rules: [
+      for (final r in (j['rules'] as List? ?? []))
+        SafetyRule.fromJson(r as Map<String, dynamic>),
+    ],
+    starterLock: j['starter_lock'] as bool? ?? false,
+    note: j['note'] as String? ?? '',
+    waiting: _sl(j['waiting']),
+  );
+}

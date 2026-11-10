@@ -5,6 +5,7 @@ import '../models.dart';
 import '../state.dart';
 import '../theme.dart';
 import '../widgets.dart';
+import 'safety_rules.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -223,6 +224,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           const SectionTitle('Safety rules'),
           GlassCard(
             child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 _rule('Max per stock', pct(test!.maxPositionPct, sign: false)),
                 _rule('Max stocks at once', '${test!.maxOpenPositions}'),
@@ -236,8 +238,26 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
                 const SizedBox(height: 6),
                 Text(
-                  'These are capped by hard limits in the bot that nothing can loosen.',
+                  'Test shown. You can change these and four more, each within the bot\'s fixed hard limits.',
                   style: t.bodySmall?.copyWith(color: AppColors.muted),
+                ),
+                const SizedBox(height: 12),
+                Wrap(
+                  spacing: 10,
+                  runSpacing: 8,
+                  children: [
+                    FilledButton.tonalIcon(
+                      onPressed: () => _openRules('test', test!.budget),
+                      icon: const Icon(Icons.tune_rounded),
+                      label: const Text('Edit Test rules'),
+                    ),
+                    if (live != null)
+                      OutlinedButton.icon(
+                        onPressed: () => _openRules('live', live!.budget),
+                        icon: Icon(Icons.tune_rounded, color: AppColors.live),
+                        label: const Text('Edit Live rules'),
+                      ),
+                  ],
                 ),
               ],
             ),
@@ -270,6 +290,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ),
       ],
     );
+  }
+
+  Future<void> _openRules(String mode, double? budget) async {
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => SafetyRulesScreen(mode: mode, budget: budget),
+      ),
+    );
+    await load(); // show what changed
   }
 
   Widget _rule(String k, String v) => Padding(
