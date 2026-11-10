@@ -120,6 +120,24 @@ class StoreTests(unittest.TestCase):
         self.store.change_rules(Mode.TEST, {"atr_stop_multiple": None})
         self.assertEqual(self.store.settings_for(Mode.TEST).atr_stop_multiple, 2.5)
 
+    def test_waiting_reset_shows_the_value_it_will_become(self):
+        self.live_running_for(40)
+        self.store.update(Mode.LIVE, {"lab_rules": {"atr_stop_multiple": 3.0}})
+        self.store.change_rules(Mode.LIVE, {"atr_stop_multiple": 2.0}, now=TUESDAY_2PM)  # safer: now
+        out = self.store.change_rules(Mode.LIVE, {"atr_stop_multiple": None}, now=TUESDAY_2PM)
+        self.assertIn("2x → 3x", out["waiting"][0])  # back to the lab's 3.0, not the default 2.0
+        self.assertEqual(self.store.pending_rules(Mode.LIVE, TUESDAY_2PM)["atr_stop_multiple"]["shows"], 3.0)
+        later = TUESDAY_2PM + timedelta(days=1)
+        self.assertEqual(self.store.settings_for(Mode.LIVE, now=later).atr_stop_multiple, 3.0)
+
+    def test_lab_report_hides_changes_your_rules_override(self):
+        from autotrader.lab import Lab
+        self.store.update(Mode.TEST, {"lab_rules": {"atr_stop_multiple": 2.5}})
+        lab = Lab(self.store, None, lambda: self.store.settings_for(Mode.TEST, with_lab=False))
+        self.assertEqual(len(lab.report("test")["changes"]), 1)
+        self.store.change_rules(Mode.TEST, {"atr_stop_multiple": 3.0})
+        self.assertEqual(lab.report("test")["changes"], [])
+
     def test_saved_rules_survive_reload_and_bad_file_values_are_ignored(self):
         from autotrader.server import SettingsStore
         self.store.change_rules(Mode.TEST, {"max_open_positions": 10})

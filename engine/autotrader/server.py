@@ -148,6 +148,10 @@ class SettingsStore:
         unknown = [k for k in values if k not in RULES_BY_KEY]
         if unknown:
             raise ValueError(f"Not a rule the app can change: {', '.join(unknown)}")
+        with self._lock:  # decide and save together, so two changes at once can't both pass
+            return self._change_rules(mode, values, now)
+
+    def _change_rules(self, mode: Mode, values: dict, now: datetime) -> dict:
         current = self.settings_for(mode, now=now)
         without_mine = self.settings_for(mode, now=now, with_mine=False)
         live, locked = mode is Mode.LIVE, mode is Mode.LIVE and self.starter_active()
@@ -162,32 +166,32 @@ class SettingsStore:
                 raise ValueError(
                     f"For the first {HARD_LIMITS.live_starter_days} days of Live, rules can only be "
                     f"made safer. {rule.label} can't go from {rule.show(old)} to {rule.show(new)} yet.")
-            plan.append((k, None if v is None else new, later))
+            plan.append((k, None if v is None else new, new, later))
             line = f"{rule.label}: {rule.show(old)} → {rule.show(new)}"
             (waiting if later else applied).append(line)
-        with self._lock:
-            data = self.data.setdefault(mode.value, {})
-            mine = dict(data.get("my_rules") or {})
-            pending = dict(data.get("rules_pending") or {})
+        # The caller holds the lock.
+        data = self.data.setdefault(mode.value, {})
+        mine = dict(data.get("my_rules") or {})
+        pending = dict(data.get("rules_pending") or {})
 
-            def put(k: str, v) -> None:
-                if v is None:
-                    mine.pop(k, None)
-                else:
-                    mine[k] = v
+        def put(k: str, v) -> None:
+            if v is None:
+                mine.pop(k, None)
+            else:
+                mine[k] = v
 
-            for k, p in list(pending.items()):  # fold in changes whose start time has come
-                if datetime.fromisoformat(p["from"]) <= now:
-                    put(k, p.get("value"))
-                    del pending[k]
-            for k, v, later in plan:
-                if later:
-                    pending[k] = {"value": v, "from": opens.isoformat(timespec="seconds")}
-                else:
-                    pending.pop(k, None)
-                    put(k, v)
-            data["my_rules"], data["rules_pending"] = mine, pending
-            self._save()
+        for k, p in list(pending.items()):  # fold in changes whose start time has come
+            if datetime.fromisoformat(p["from"]) <= now:
+                put(k, p.get("value"))
+                del pending[k]
+        for k, v, shown, later in plan:
+            if later:  # "shows": what the rule will be, even for "back to recommended"
+                pending[k] = {"value": v, "shows": shown, "from": opens.isoformat(timespec="seconds")}
+            else:
+                pending.pop(k, None)
+                put(k, v)
+        data["my_rules"], data["rules_pending"] = mine, pending
+        self._save()
         return {"applied": applied, "waiting": waiting,
                 "starts": opens.isoformat(timespec="seconds") if waiting else None}
 
@@ -961,6 +965,9 @@ def create_app(runners: dict[Mode, BotRunner], journal: Journal, token: str,
     def rules_report(r: BotRunner) -> dict:
         s, lab = r.settings, clamp_rules(r.store.get(r.mode).get("lab_rules", {}))
         mine, pending = r.store.my_rules(r.mode), r.store.pending_rules(r.mode)
+        # Recommended: this server's defaults (including any AUTOTRADER_* settings), before the
+        # lab's and your changes.
+        standard = r.store.settings_for(r.mode, with_lab=False, with_mine=False)
         locked = r.mode is Mode.LIVE and r.store.starter_active()
         out = []
         for rule in RULES:
@@ -969,11 +976,14 @@ def create_app(runners: dict[Mode, BotRunner], journal: Journal, token: str,
             out.append({
                 "key": rule.key, "label": rule.label, "help": rule.help, "unit": rule.unit,
                 "low": rule.low, "high": rule.high, "step": rule.step, "value": value,
-                "recommended": rule.recommended, "looser_when": rule.looser_when,
+                "recommended": getattr(standard, rule.key), "looser_when": rule.looser_when,
                 "set_by": ("you" if rule.key in mine else
-                           "lab" if rule.key in lab and lab[rule.key] != rule.recommended else "recommended"),
+                           "lab" if rule.key in lab and lab[rule.key] != getattr(standard, rule.key)
+                           else "recommended"),
                 "pending": None if p is None else {
-                    "value": rule.recommended if p.get("value") is None else p["value"], "from": p["from"]},
+                    "value": p.get("shows", p.get("value") if p.get("value") is not None
+                                   else getattr(standard, rule.key)),
+                    "from": p["from"]},
             })
         return {"rules": out, "starter_lock": locked,
                 "note": ("Live: safer changes start now; riskier ones start at the next market open."
@@ -998,7 +1008,7 @@ def create_app(runners: dict[Mode, BotRunner], journal: Journal, token: str,
         if result["waiting"]:
             when = datetime.fromisoformat(result["starts"]).astimezone(NEW_YORK)
             journal.add_event(r.mode.value, "settings",
-                              f"Safety rules changing at the market open ({when:%a %b %-d}, 9:30am ET): "
+                              f"Safety rules changing at the market open ({when:%a %b} {when.day}, 9:30am ET): "
                               + "; ".join(result["waiting"]))
         return rules_report(r) | result
 

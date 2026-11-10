@@ -134,6 +134,11 @@ class _SafetyRulesScreenState extends State<SafetyRulesScreen> {
     final t = Theme.of(context).textTheme;
     final r = report;
     final dirty = changed.isNotEmpty;
+    // Live's starter period refuses riskier changes, and the whole save with them.
+    final blocked =
+        live &&
+        (r?.starterLock ?? false) &&
+        changed.any((c) => c.looser(c.value, draft[c.key]!));
     return Scaffold(
       extendBodyBehindAppBar: true,
       appBar: AppBar(
@@ -162,9 +167,11 @@ class _SafetyRulesScreenState extends State<SafetyRulesScreen> {
                     Expanded(
                       flex: 2,
                       child: FilledButton(
-                        onPressed: saving ? null : save,
+                        onPressed: saving || blocked ? null : save,
                         child: Text(
-                          'Save ${changed.length} change${changed.length == 1 ? '' : 's'}',
+                          blocked
+                              ? 'Only safer changes for now'
+                              : 'Save ${changed.length} change${changed.length == 1 ? '' : 's'}',
                         ),
                       ),
                     ),

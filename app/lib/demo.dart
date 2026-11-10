@@ -450,7 +450,7 @@ class DemoApi implements TraderApi {
     (
       'atr_stop_multiple',
       'Safety stop distance',
-      'How far below the price the safety stop sits, in average daily moves. A stop is never more than 8% below the buy.',
+      'How far below the price the safety stop sits, in average daily moves. Wider stops sell less often but lose more when hit; a stop is never more than 8% below the buy.',
       1.5,
       3.5,
       0.25,

@@ -108,6 +108,7 @@ void main() {
     await t.drag(find.byType(Slider).first, const Offset(120, 0));
     await t.pumpAndSettle();
     expect(find.textContaining('only safer changes'), findsOneWidget);
+    expect(find.text('Only safer changes for now'), findsOneWidget);
     expect(t.takeException(), isNull);
   });
 }
