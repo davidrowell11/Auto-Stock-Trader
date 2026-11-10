@@ -413,9 +413,27 @@ class LearnedMemory {
     required this.wins,
     required this.weights,
     this.lessonsError,
+    this.notebook = const [],
+    this.reviews = const [],
+    this.calibration,
+    this.exam,
+    this.practiceTrades = 0,
   });
   final DateTime ts;
   final List<String> lessons;
+
+  /// Lessons with the trades for and against each; the bot decides which are proven.
+  final List<NotebookEntry> notebook;
+
+  /// The analyst's own reviews of its finished trades, newest first.
+  final List<PostMortem> reviews;
+
+  /// How sure it said it was against how often it was right.
+  final Calibration? calibration;
+
+  /// Old lessons vs new on past setups, the last time the notebook changed.
+  final ExamResult? exam;
+  final int practiceTrades;
 
   /// Why new lessons couldn't be written last time (e.g. the analyst was out of credits).
   final String? lessonsError;
@@ -434,6 +452,108 @@ class LearnedMemory {
       for (final w in j['weights'] as List)
         (label: w['label'] as String, weight: (w['weight'] as num).toDouble()),
     ],
+    notebook: [
+      for (final e in (j['notebook'] as List? ?? []))
+        NotebookEntry.fromJson(e as Map<String, dynamic>),
+    ],
+    reviews: [
+      for (final r in (j['reviews'] as List? ?? []))
+        PostMortem.fromJson(r as Map<String, dynamic>),
+    ],
+    calibration: j['calibration'] == null
+        ? null
+        : Calibration.fromJson(j['calibration'] as Map<String, dynamic>),
+    exam: j['exam'] == null
+        ? null
+        : ExamResult.fromJson(j['exam'] as Map<String, dynamic>),
+    practiceTrades: (j['practice_trades'] as num?)?.toInt() ?? 0,
+  );
+}
+
+class NotebookEntry {
+  NotebookEntry({
+    required this.text,
+    required this.status,
+    required this.support,
+    required this.against,
+  });
+  final String text;
+  final String status; // active, candidate or retired
+  final int support, against;
+  factory NotebookEntry.fromJson(Map<String, dynamic> j) => NotebookEntry(
+    text: j['text'] as String,
+    status: j['status'] as String? ?? 'candidate',
+    support: (j['support'] as List? ?? []).length,
+    against: (j['against'] as List? ?? []).length,
+  );
+}
+
+class PostMortem {
+  PostMortem({
+    required this.trade,
+    required this.expected,
+    required this.happened,
+    required this.cause,
+    required this.lesson,
+  });
+  final String trade, expected, happened, cause, lesson;
+  factory PostMortem.fromJson(Map<String, dynamic> j) => PostMortem(
+    trade: j['trade'] as String? ?? '',
+    expected: j['expected'] as String? ?? '',
+    happened: j['happened'] as String? ?? '',
+    cause: j['cause'] as String? ?? 'luck',
+    lesson: j['lesson'] as String? ?? '',
+  );
+}
+
+class Calibration {
+  Calibration({
+    required this.calls,
+    this.said,
+    this.right,
+    required this.shift,
+    required this.bins,
+    required this.note,
+  });
+  final int calls;
+  final double? said, right;
+  final double shift; // added to its confidence before the bar
+  final List<({String label, int calls, double said, double right})> bins;
+  final String note;
+  factory Calibration.fromJson(Map<String, dynamic> j) => Calibration(
+    calls: (j['calls'] as num?)?.toInt() ?? 0,
+    said: _dn(j['said']),
+    right: _dn(j['right']),
+    shift: _d(j['shift']),
+    bins: [
+      for (final b in (j['bins'] as List? ?? []))
+        (
+          label: b['label'] as String,
+          calls: (b['calls'] as num).toInt(),
+          said: _d(b['said']),
+          right: _d(b['right']),
+        ),
+    ],
+    note: j['note'] as String? ?? '',
+  );
+}
+
+class ExamResult {
+  ExamResult({
+    required this.cases,
+    required this.oldScore,
+    required this.newScore,
+    required this.passed,
+  });
+  final int cases;
+  final double oldScore,
+      newScore; // lower is better (0 perfect, 0.25 a coin flip)
+  final bool passed;
+  factory ExamResult.fromJson(Map<String, dynamic> j) => ExamResult(
+    cases: (j['cases'] as num?)?.toInt() ?? 0,
+    oldScore: _d(j['old_score']),
+    newScore: _d(j['new_score']),
+    passed: j['passed'] as bool? ?? true,
   );
 }
 

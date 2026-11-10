@@ -59,11 +59,31 @@ class _LearningCardState extends State<LearningCard> {
       children: [
         SectionTitle(
           'What the bot learned',
-          trailing: !live && d != null && d.needs == 0
-              ? TextButton.icon(
-                  onPressed: busy ? null : () => _run(api.learnNow),
-                  icon: const Icon(Icons.refresh_rounded, size: 18),
-                  label: const Text('Learn now'),
+          trailing: !live && d != null
+              ? PopupMenuButton<String>(
+                  tooltip: 'Learning options',
+                  icon: const Icon(Icons.more_horiz_rounded),
+                  enabled: !busy,
+                  onSelected: (v) =>
+                      v == 'learn' ? _run(api.learnNow) : _practice(),
+                  itemBuilder: (_) => [
+                    PopupMenuItem(
+                      value: 'learn',
+                      enabled: d.needs == 0,
+                      child: const ListTile(
+                        leading: Icon(Icons.refresh_rounded),
+                        title: Text('Learn now'),
+                      ),
+                    ),
+                    const PopupMenuItem(
+                      value: 'practice',
+                      child: ListTile(
+                        leading: Icon(Icons.school_rounded),
+                        title: Text('Practise on past trades'),
+                        subtitle: Text('Once a month, about \$1'),
+                      ),
+                    ),
+                  ],
                 )
               : null,
         ),
@@ -87,6 +107,21 @@ class _LearningCardState extends State<LearningCard> {
           ),
       ],
     );
+  }
+
+  Future<void> _practice() async {
+    try {
+      final note = await api.practice();
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(note)));
+      }
+    } on ApiException catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(e.message)));
+      }
+    }
   }
 
   Widget _proposal(LearnedMemory m) => Padding(
@@ -156,7 +191,9 @@ class _LearningCardState extends State<LearningCard> {
               style: t.bodySmall?.copyWith(color: AppColors.warn),
             ),
           ),
-        if (m.lessons.isEmpty)
+        if (m.notebook.isNotEmpty)
+          ..._notebook(m)
+        else if (m.lessons.isEmpty)
           Text('No written lessons yet.', style: t.bodyMedium)
         else
           for (final l in m.lessons)
@@ -177,13 +214,267 @@ class _LearningCardState extends State<LearningCard> {
                 ],
               ),
             ),
+        if (m.calibration != null && m.calibration!.calls > 0) ...[
+          const Divider(height: 28),
+          _calibration(m.calibration!),
+        ],
+        if (m.exam != null) ...[const SizedBox(height: 10), _exam(m.exam!)],
         if (m.weights.isNotEmpty) ...[
-          const SizedBox(height: 6),
+          const Divider(height: 28),
           Text('How much each idea source counts', style: muted),
           const SizedBox(height: 6),
           for (final w in m.weights) _weightRow(w.label, w.weight),
         ],
+        if (m.reviews.isNotEmpty) ...[
+          const Divider(height: 20),
+          Theme(
+            data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+            child: ExpansionTile(
+              tilePadding: EdgeInsets.zero,
+              childrenPadding: EdgeInsets.zero,
+              title: Text('Its reviews of its own trades', style: t.titleSmall),
+              subtitle: Text(
+                '${m.reviews.length} most recent'
+                '${m.practiceTrades > 0 ? ' · practised on ${m.practiceTrades} past trades' : ''}',
+                style: muted,
+              ),
+              children: [for (final r in m.reviews) _review(r)],
+            ),
+          ),
+        ],
       ],
+    );
+  }
+
+  List<Widget> _notebook(LearnedMemory m) {
+    final t = Theme.of(context).textTheme;
+    final muted = t.bodySmall?.copyWith(color: AppColors.muted);
+    final proven = m.notebook.where((e) => e.status == 'active').toList();
+    final testing = m.notebook.where((e) => e.status == 'candidate').toList();
+    final retired = m.notebook.where((e) => e.status == 'retired').toList();
+    Widget group(
+      String title,
+      String hint,
+      List<NotebookEntry> items,
+      Color c,
+      IconData icon,
+    ) => Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          children: [
+            Icon(icon, size: 16, color: c),
+            const SizedBox(width: 6),
+            Text(title, style: t.labelLarge?.copyWith(color: c)),
+            const SizedBox(width: 8),
+            Expanded(child: Text(hint, style: muted)),
+          ],
+        ),
+        const SizedBox(height: 8),
+        for (final e in items)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 10),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [Text(e.text), const SizedBox(height: 4), _evidence(e)],
+            ),
+          ),
+      ],
+    );
+    return [
+      if (proven.isNotEmpty)
+        group(
+          'Proven',
+          'the analyst relies on these',
+          proven,
+          AppColors.gain,
+          Icons.verified_rounded,
+        ),
+      if (testing.isNotEmpty)
+        group(
+          'Being tested',
+          'shown to it as unproven',
+          testing,
+          AppColors.accent,
+          Icons.science_rounded,
+        ),
+      if (retired.isNotEmpty)
+        Theme(
+          data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+          child: ExpansionTile(
+            tilePadding: EdgeInsets.zero,
+            title: Text('Retired (${retired.length})', style: muted),
+            children: [
+              for (final e in retired)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: Text(
+                    e.text,
+                    style: muted?.copyWith(
+                      decoration: TextDecoration.lineThrough,
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      if (proven.isEmpty && testing.isEmpty)
+        Text('Every lesson so far has been retired.', style: muted),
+    ];
+  }
+
+  /// Trades for vs against, as a small split bar with counts.
+  Widget _evidence(NotebookEntry e) {
+    final total = e.support + e.against;
+    return Row(
+      children: [
+        SizedBox(
+          width: 90,
+          height: 6,
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(3),
+            child: Row(
+              children: [
+                if (e.support > 0)
+                  Expanded(
+                    flex: e.support,
+                    child: Container(color: AppColors.gain),
+                  ),
+                if (e.against > 0)
+                  Expanded(
+                    flex: e.against,
+                    child: Container(color: AppColors.loss),
+                  ),
+                if (total == 0)
+                  Expanded(child: Container(color: AppColors.muted)),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(width: 8),
+        Flexible(
+          child: Text(
+            '${e.support} trade${e.support == 1 ? '' : 's'} for · ${e.against} against',
+            style: Theme.of(context).textTheme.bodySmall
+                ?.copyWith(color: AppColors.muted),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _calibration(Calibration c) {
+    final t = Theme.of(context).textTheme;
+    final muted = t.bodySmall?.copyWith(color: AppColors.muted);
+    Widget bar(double v, Color color) => ClipRRect(
+      borderRadius: BorderRadius.circular(3),
+      child: LinearProgressIndicator(
+        value: v.clamp(0, 1),
+        minHeight: 6,
+        color: color,
+        backgroundColor: color.withValues(alpha: 0.12),
+      ),
+    );
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text(
+          'How sure it says it is vs how often it\'s right',
+          style: t.titleSmall,
+        ),
+        const SizedBox(height: 4),
+        Text(c.note, style: muted),
+        const SizedBox(height: 10),
+        for (final b in c.bins)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 10),
+            child: Row(
+              children: [
+                SizedBox(
+                  width: 92,
+                  child: Text('${b.label}\n${b.calls} calls', style: muted),
+                ),
+                Expanded(
+                  child: Column(
+                    children: [
+                      bar(b.said, AppColors.accent),
+                      const SizedBox(height: 4),
+                      bar(b.right, AppColors.gain),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 10),
+                SizedBox(
+                  width: 74,
+                  child: Text(
+                    'said ${(b.said * 100).round()}%\nright ${(b.right * 100).round()}%',
+                    textAlign: TextAlign.right,
+                    style: t.bodySmall?.copyWith(
+                      fontFeatures: const [FontFeature.tabularFigures()],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+      ],
+    );
+  }
+
+  Widget _exam(ExamResult e) => Row(
+    children: [
+      Icon(
+        e.passed ? Icons.task_alt_rounded : Icons.block_rounded,
+        size: 18,
+        color: e.passed ? AppColors.gain : AppColors.warn,
+      ),
+      const SizedBox(width: 8),
+      Expanded(
+        child: Text(
+          e.passed
+              ? 'Its latest lessons passed their exam on ${e.cases} past trades '
+                    '(score ${e.newScore.toStringAsFixed(3)} vs ${e.oldScore.toStringAsFixed(3)} before; lower is better).'
+              : 'Its latest lessons made its calls on ${e.cases} past trades worse, so it kept the old ones.',
+          style: Theme.of(context).textTheme.bodySmall,
+        ),
+      ),
+    ],
+  );
+
+  Widget _review(PostMortem r) {
+    final t = Theme.of(context).textTheme;
+    final (label, color) = switch (r.cause) {
+      'reasoning' => ('Its reasoning', AppColors.accent),
+      'rules' => ('The bot\'s rules', AppColors.test),
+      'market' => ('The market', AppColors.warn),
+      _ => ('Luck', AppColors.muted),
+    };
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 14),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  r.trade,
+                  style: t.labelLarge?.copyWith(fontWeight: FontWeight.w700),
+                ),
+              ),
+              Pill(label, color: color),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Text('Expected: ${r.expected}', style: t.bodySmall),
+          Text('Happened: ${r.happened}', style: t.bodySmall),
+          if (r.lesson.isNotEmpty)
+            Text(
+              'Takeaway: ${r.lesson}',
+              style: t.bodySmall?.copyWith(color: AppColors.accent),
+            ),
+        ],
+      ),
     );
   }
 
