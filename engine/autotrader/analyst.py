@@ -60,6 +60,10 @@ especially with raised guidance or analysts raising their estimates, tends to ke
 stock for weeks (post-earnings drift), so a jump on such news is a stronger setup, not just an \
 extended one. Unusually heavy short selling, or a jump driven by a short squeeze, fades more often.
 
+If the buy is outside regular hours, trading is thinner and prices gap more, so a setup has \
+to be cleaner to be worth it; the after-hours record shows how the bot's earlier after-hours \
+buys did, so weigh it. A move on fresh news before the open is the kind most likely to hold.
+
 Weigh the expert signals provided: open-market insider buying and purchases by members of \
 Congress with strong track records are positives, but they are reported with a delay.
 

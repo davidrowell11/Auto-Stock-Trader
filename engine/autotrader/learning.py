@@ -139,6 +139,10 @@ class Memory:
     lessons: list[str] = field(default_factory=list)
     cases: list[dict] = field(default_factory=list)  # finished trades, as Outcome.as_dict()
     calibration_shift: float = 0.0  # added to the analyst's confidence (calibration.py)
+    # How much pickier and smaller after-hours buys are, learned from how they've done.
+    after_hours_extra: float = 0.0  # added to the analyst confidence they need
+    after_hours_size: float = 1.0  # times their normal size
+    after_hours_note: str | None = None  # their record, for the analyst
 
     def adjust(self, confidence: float) -> float:
         """The analyst's confidence, corrected by its track record."""
@@ -182,9 +186,59 @@ class Memory:
             shift = float((record.get("calibration") or {}).get("shift") or 0.0)
         except (TypeError, ValueError):
             shift = 0.0
+        hours = record.get("after_hours") or {}
         return cls(weights, [str(x) for x in record.get("lessons", [])][:MAX_LESSONS],
                    [c for c in record.get("cases", []) if isinstance(c, dict) and "return" in c],
-                   calibration.adjust(0.5, shift) - 0.5)
+                   calibration.adjust(0.5, shift) - 0.5,
+                   min(AFTER_HOURS_MAX_EXTRA, max(0.0, float(hours.get("extra_confidence") or 0))),
+                   min(1.0, max(AFTER_HOURS_MIN_SIZE, float(hours.get("size") or 1.0))),
+                   str(hours["note"]) if hours.get("note") else None)
+
+
+AFTER_HOURS_MIN = 5  # after-hours trades needed before their results change anything
+AFTER_HOURS_RECENT = 10  # judged on the most recent ones, so an improvement shows quickly
+AFTER_HOURS_MAX_EXTRA = 0.10  # at most this much more analyst confidence needed
+AFTER_HOURS_MIN_SIZE = 0.5  # and never smaller than half size
+
+
+def _avg(xs: list[float]) -> float:
+    return sum(xs) / len(xs) if xs else 0.0
+
+
+def after_hours_verdict(results: list["Outcome"]) -> dict | None:
+    """How after-hours buys should change, judged by the money they made against regular-hours
+    buys. Worse results make them pickier (a higher analyst bar) and smaller; as they improve the
+    bar and size come back to normal. They never stop, and never get looser than regular hours.
+    None with too few to judge."""
+    ah = [o.ret for o in results if "after_hours" in o.sources][-AFTER_HOURS_RECENT:]
+    if len(ah) < AFTER_HOURS_MIN:
+        return None
+    regular = [o.ret for o in results if "after_hours" not in o.sources][-3 * AFTER_HOURS_RECENT:]
+    avg, reg = _avg(ah), _avg(regular)
+    wins = sum(r > 0 for r in ah)
+    # How far behind they are, trusted more the more trades there are (10 trades: half).
+    behind = max(0.0, reg - avg) * len(ah) / (len(ah) + 10)
+    extra = round(min(AFTER_HOURS_MAX_EXTRA, 3 * behind), 2)
+    size = round(max(AFTER_HOURS_MIN_SIZE, 1 - 5 * extra), 2)
+    note = (f"Its last {len(ah)} buys outside regular hours: {wins} made money, averaging "
+            f"{avg:+.1%}, against {reg:+.1%} for regular-hours buys.")
+    if extra > 0:
+        note += (f" So after-hours buys now need {extra:.0%} more analyst confidence and are "
+                 f"{size:.0%} of normal size until they do better.")
+    return {"trades": len(ah), "wins": wins, "avg_return": round(avg, 4),
+            "regular_avg_return": round(reg, 4), "extra_confidence": extra, "size": size,
+            "note": note}
+    prev = last or {}
+    since = date.fromisoformat(prev["since"]) if prev.get("paused") and prev.get("since") else today
+    retry = since + AFTER_HOURS_RETRY
+    if today >= retry:  # a week's trial; the next weekly review judges it again
+        out["note"] = "Trying after-hours buys again for a week to see if they've improved"
+        return out
+    out.update(paused=True, since=since.isoformat(), note=(
+        f"after-hours buys are paused: the last {len(ah)} averaged {avg:+.1%}, against "
+        f"{reg:+.1%} in regular hours. The bot tries them again on "
+        f"{retry:%b} {retry.day}"))
+    return out
 
 
 def outcomes(journal: Journal, mode: str) -> list[Outcome]:
@@ -385,6 +439,10 @@ class Learner:
                 log.warning("Couldn't get lessons from the analyst: %s", exc)
                 lessons_error = str(exc)[:300]
         wins = sum(o.ret > 0 for o in results)
+        hours = after_hours_verdict(results)
+        before = (last.get("after_hours") or {}).get("extra_confidence") or 0
+        if hours and hours["extra_confidence"] != before:
+            self.journal.add_event("test", "learning", hours["note"])
         record = {
             "learned_at": self._last_try.isoformat(timespec="seconds"),
             "weights": weights, "lessons": lessons, "trades": len(results), "wins": wins,
@@ -393,6 +451,7 @@ class Learner:
             "exam": exam, "practice_trades": len(practice),
             # How sure the analyst should be, from its graded calls (kept until there's a new grade).
             "calibration": (card or {}).get("calibration") or last.get("calibration"),
+            "after_hours": hours,
             "cases": [o.as_dict() for o in results[-MAX_CASES:]],
             "stats": {s: {**st, "label": LABELS.get(s, s)} for s, st in stats.items()},
         }
@@ -481,7 +540,8 @@ def report(journal: Journal, mode: str) -> dict:
                 "notebook": record.get("notebook", []),
                 "reviews": list(reversed(record.get("reviews", [])))[:10],
                 "calibration": record.get("calibration"),
-                "exam": record.get("exam"), "practice_trades": record.get("practice_trades", 0)}
+                "exam": record.get("exam"), "practice_trades": record.get("practice_trades", 0),
+                "after_hours": record.get("after_hours")}
     finished = {m: len(outcomes(journal, m)) for m in ("test", "live")}
     return {
         "active": view(journal.memory(mode)),

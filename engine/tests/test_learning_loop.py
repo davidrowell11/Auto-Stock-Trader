@@ -330,3 +330,49 @@ class PracticeEndpointTests(unittest.TestCase):
             r = c.post("/api/test/learning/practice", headers=AUTH)
             self.assertEqual(r.status_code, 503)  # no price history (no lab) on this server
             self.assertIn("price history", r.json()["detail"])
+
+
+class AfterHoursLearningTests(unittest.TestCase):
+    def results(self, ah_ret, n_ah, reg_ret=0.02, n_reg=10):
+        from autotrader.learning import Outcome
+        mk = lambda i, ret, src: Outcome("test", f"S{i}", "2026-10-01", "2026-10-10", 100.0,  # noqa: E731
+                                         100.0 * (1 + ret), src, "Hit stop")
+        return ([mk(i, reg_ret, ["trend"]) for i in range(n_reg)]
+                + [mk(100 + i, ah_ret, ["trend", "after_hours"]) for i in range(n_ah)])
+
+    def test_too_few_change_nothing(self):
+        from autotrader.learning import after_hours_verdict
+        self.assertIsNone(after_hours_verdict(self.results(-0.05, 4)))
+
+    def test_worse_after_hours_buys_get_pickier_and_smaller_but_never_stop(self):
+        from autotrader.learning import AFTER_HOURS_MAX_EXTRA, after_hours_verdict
+        v = after_hours_verdict(self.results(-0.03, 10))
+        self.assertGreater(v["extra_confidence"], 0)
+        self.assertLess(v["size"], 1.0)
+        self.assertGreaterEqual(v["size"], 0.5)
+        worst = after_hours_verdict(self.results(-0.5, 10))
+        self.assertEqual(worst["extra_confidence"], AFTER_HOURS_MAX_EXTRA)
+        mem = Memory.from_record({"after_hours": v})
+        self.assertEqual(mem.after_hours_extra, v["extra_confidence"])
+        self.assertIn("more analyst confidence", mem.after_hours_note)
+
+    def test_good_after_hours_buys_are_treated_normally(self):
+        from autotrader.learning import after_hours_verdict
+        v = after_hours_verdict(self.results(0.04, 10))
+        self.assertEqual((v["extra_confidence"], v["size"]), (0.0, 1.0))
+
+    def test_the_bar_rises_only_after_hours(self):
+        class Sure:
+            supports_quick = False
+
+            def review(self, candidate, **_):
+                return AnalystView("buy", 0.62, "ok")
+
+        e = Engine(SlowBroker(100_000, {"AAPL": make_bars(uptrend())}), Settings(), Journal(),
+                   analyst=Sure())
+        e.memory = Memory(after_hours_extra=0.05)
+        from autotrader.models import Signal
+        sig = Signal("AAPL", 0.7, 100.0, 2.0)
+        self.assertIsInstance(e._analyst_verdict(sig, False), AnalystView)
+        e.session = "pre"
+        self.assertIsInstance(e._analyst_verdict(sig, False), str)
