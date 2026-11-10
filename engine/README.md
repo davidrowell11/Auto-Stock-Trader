@@ -45,6 +45,11 @@ calendar, so holidays and early closes are handled).
    call (a buy at least 15 points above the confidence needed with no red
    flags, or a skip that names a red flag). Close calls and every penny
    stock go to the full analyst.
+   Each review comes with a desk check (`desk.py`): the stock's trend and
+   momentum against its averages and the market, its volume, the market's
+   mood, and how it would sit with current holdings (same sector, closest
+   twin). The full analyst thinks step by step and can call `look_up_stock`
+   (at most twice) to compare with a competitor or the sector's fund.
 6. **Learns from its own trades** (`learning.py`). Each buy records what
    pointed the bot at the stock (trend rules, the screener, insiders,
    Congress, the analyst). Once a week it looks at its finished trades:

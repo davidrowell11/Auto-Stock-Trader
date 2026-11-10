@@ -12,7 +12,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 
-from . import penny, strategy
+from . import desk, penny, strategy
 from . import indicators as ind
 from .analyst import AnalystUnavailable, AnalystView
 from .broker.base import Broker
@@ -560,7 +560,10 @@ class Engine:
                         continue
                     reviews += 1
                     self.progress(f"Asking the AI analyst about {sig.symbol}")
-                verdict = self._analyst_verdict(sig, is_penny, cached, similar)
+                check = None if cached else desk.desk_check(
+                    sig.symbol, bars, risk.positions, risk.capital, sector, sector_of, self.mood)
+                verdict = self._analyst_verdict(sig, is_penny, cached, similar, check,
+                                                market=bars.get(MARKET))
                 if isinstance(verdict, str):
                     report.skipped.append(f"{sig.symbol}: {verdict}")
                     self.progress(f"Skipped {sig.symbol}: {verdict}")
@@ -601,8 +604,16 @@ class Engine:
             self.journal.add_event(self.mode, "buy", f"Bought {size.qty:g} {sig.symbol} at about ${sig.price:.2f}")
             log.info("BUY %s x%s @ %.2f (stop %.2f)", sig.symbol, size.qty, sig.price, stop)
 
+    def _look_up(self, market: list[Bar] | None) -> Callable[[str], dict]:
+        """The analyst's look_up_stock tool: the desk-check summary for any symbol."""
+        def look_up(symbol: str) -> dict:
+            history = self.broker.get_daily_bars([symbol], HISTORY_DAYS).get(symbol, [])
+            return desk.stock_facts(symbol, history, market)
+        return look_up
+
     def _analyst_verdict(self, sig: Signal, is_penny: bool, cached: dict | None = None,
-                         similar: list[dict] | None = None) -> AnalystView | str | None:
+                         similar: list[dict] | None = None, check: dict | None = None,
+                         market: list[Bar] | None = None) -> AnalystView | str | None:
         """The analyst's approval, a reason string to skip, or None if it was unavailable."""
         if cached:
             view = AnalystView(cached["action"], cached["confidence"], cached["reasoning"],
@@ -618,11 +629,15 @@ class Engine:
                     "recent_headlines": self.news_seen.get(sig.symbol, NewsCheck()).headlines,
                     "lessons_from_past_trades": self.memory.lessons,
                     "similar_past_trades": similar or [],
+                    **({"desk_check": check} if check else {}),
             }
             view = self._quick_view(candidate, is_penny)
             if view is None:
                 try:
-                    view = self.analyst.review(candidate)
+                    if getattr(self.analyst, "supports_lookup", False):
+                        view = self.analyst.review(candidate, lookup=self._look_up(market))
+                    else:
+                        view = self.analyst.review(candidate)
                 except AnalystUnavailable as exc:
                     log.warning("Analyst unavailable for %s: %s", sig.symbol, exc)
                     if is_penny:
