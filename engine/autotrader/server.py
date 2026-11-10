@@ -510,8 +510,14 @@ class BotRunner:
         # Pre-market/after hours with after-hours buying on: a limit order now. Otherwise (closed,
         # buying off, or a penny stock) the order waits for the 9:30am open, as it always has.
         extended = engine.extended and s.after_hours_buys and not is_penny
+        hours = 1.0
+        if extended and engine.memory_fn is not None:  # sized by how after-hours buys have done
+            try:
+                hours = engine.memory_fn().after_hours_size
+            except Exception as exc:
+                log.warning("Couldn't read what the bot learned: %s", exc)
         risk = RiskManager(s, account, positions, self.journal.peak_equity(self.mode.value),
-                           mood_multiplier=engine.mood.size_multiplier)
+                           mood_multiplier=engine.mood.size_multiplier * hours)
         asset = engine.assets.get(a["symbol"])
         fractional = bool(getattr(asset, "fractionable", False)) and not is_penny and not extended
         # Prices for the look-alike check: does it move with something the bot already holds?

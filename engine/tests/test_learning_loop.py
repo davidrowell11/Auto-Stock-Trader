@@ -376,3 +376,22 @@ class AfterHoursLearningTests(unittest.TestCase):
         self.assertIsInstance(e._analyst_verdict(sig, False), AnalystView)
         e.session = "pre"
         self.assertIsInstance(e._analyst_verdict(sig, False), str)
+
+    def test_profitable_after_hours_buys_keep_full_size(self):
+        from autotrader.learning import after_hours_verdict
+        v = after_hours_verdict(self.results(0.01, 10, reg_ret=0.08))
+        self.assertEqual((v["extra_confidence"], v["size"]), (0.0, 1.0))
+
+    def test_a_changed_after_hours_bar_reaches_live(self):
+        from autotrader.learning import _changes_nothing, _same
+        a = {"weights": {}, "lessons": []}
+        b = {**a, "after_hours": {"extra_confidence": 0.05, "size": 0.75}}
+        self.assertFalse(_same(a, b))
+        self.assertFalse(_changes_nothing(b))
+        self.assertTrue(_changes_nothing(a))
+
+    def test_a_bad_after_hours_record_falls_back_to_normal(self):
+        m = Memory.from_record({"after_hours": {"size": "n/a"}})
+        self.assertEqual((m.after_hours_extra, m.after_hours_size), (0.0, 1.0))
+        self.assertEqual(Memory.from_record({"after_hours": "x"}).after_hours_size, 1.0)
+

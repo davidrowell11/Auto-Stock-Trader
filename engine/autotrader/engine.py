@@ -575,8 +575,6 @@ class Engine:
                     reasons.append(f"Analyst ({verdict.confidence:.0%} confident): {verdict.reasoning}")
                     sources.append("analyst")
                     facts["analyst_confidence"] = round(verdict.confidence, 3)
-            if self.extended:  # so its reviews can learn which after-hours setups work
-                facts["outside_regular_hours"] = True
             limit = limit_for(Side.BUY, sig.price, self.extended, is_penny)
             if self.needs_approval:
                 self.journal.queue_approval(self.mode, sig.symbol, "buy", size.qty, limit, reasons,
@@ -634,9 +632,9 @@ class Engine:
                     "why_the_rules_like_it": sig.reasons,
                     "recent_headlines": self.news_seen.get(sig.symbol, NewsCheck()).headlines,
                     "lessons_from_past_trades": self.memory.lessons,
-                    **({"buying_outside_regular_hours": True,
-                        "after_hours_record": self.memory.after_hours_note}
-                       if self.extended else {}),
+                    **({"buying_outside_regular_hours": True} if self.extended else {}),
+                    **({"after_hours_record": self.memory.after_hours_note}
+                       if self.extended and self.memory.after_hours_note else {}),
                     "similar_past_trades": similar or [],
                     **({"desk_check": check} if check else {}),
             }
@@ -656,7 +654,7 @@ class Engine:
                                    view.reasoning, view.red_flags, getattr(view, "model", None))
         floor = self.s.penny_analyst_min_confidence if is_penny else self.s.analyst_min_confidence
         if self.extended:  # pickier after hours when its after-hours buys have done worse
-            floor = min(0.95, floor + self.memory.after_hours_extra)
+            floor = max(floor, min(0.95, floor + self.memory.after_hours_extra))
         if not view.approves:
             flags = f" Red flags: {'; '.join(view.red_flags)}." if view.red_flags else ""
             return f"analyst said skip: {view.reasoning}{flags}"
